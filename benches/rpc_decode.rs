@@ -1,0 +1,314 @@
+use criterion::{
+  black_box, criterion_group, criterion_main, BatchSize, BenchmarkId,
+  Criterion, Throughput,
+};
+use futures::{executor::block_on, io::Cursor};
+use navy_nvim_rs::rpc::model::{decode, encode_sync, RpcMessage};
+use rmpv::{decode::read_value, Value};
+use std::collections::HashSet;
+
+const NVIM_UI_FIXTURE: &[u8] =
+  include_bytes!("fixtures/nvim_ui_notifications.bin");
+const FIXTURE_MAGIC: &[u8] = b"NVIMRSUI1\n";
+
+#[derive(Clone)]
+struct CapturedMessage {
+  bytes: Vec<u8>,
+  event_names: Vec<String>,
+}
+
+#[derive(Clone)]
+struct BenchInput {
+  name: String,
+  bytes: Vec<u8>,
+}
+
+fn encode_message(msg: RpcMessage) -> Vec<u8> {
+  let mut bytes = Vec::new();
+  encode_sync(&mut bytes, msg).unwrap();
+  bytes
+}
+
+fn small_request() -> RpcMessage {
+  RpcMessage::RpcRequest {
+    msgid: 1,
+    method: "nvim_get_current_buf".to_owned(),
+    params: vec![],
+  }
+}
+
+fn large_notification(line_count: usize) -> RpcMessage {
+  let lines = (0..line_count)
+    .map(|i| {
+      Value::from(format!("line {i}: abcdefghijklmnopqrstuvwxyz0123456789"))
+    })
+    .collect::<Vec<_>>();
+
+  RpcMessage::RpcNotification {
+    method: "nvim_buf_lines_event".to_owned(),
+    params: vec![
+      Value::from(1),
+      Value::from(0),
+      Value::from(0),
+      Value::from(line_count as i64),
+      Value::from(lines),
+      Value::from(false),
+    ],
+  }
+}
+
+fn repeated_messages(message: &[u8], count: usize) -> Vec<u8> {
+  let mut bytes = Vec::with_capacity(message.len() * count);
+  for _ in 0..count {
+    bytes.extend_from_slice(message);
+  }
+  bytes
+}
+
+fn decode_one_from_reader(bytes: Vec<u8>) -> RpcMessage {
+  let mut reader = Cursor::new(bytes);
+  let mut rest = Vec::new();
+  block_on(decode(&mut reader, &mut rest)).unwrap()
+}
+
+fn decode_one_from_rest(bytes: Vec<u8>) -> RpcMessage {
+  let mut reader = Cursor::new(Vec::new());
+  let mut rest = bytes;
+  block_on(decode(&mut reader, &mut rest)).unwrap()
+}
+
+fn decode_many_from_reader(bytes: Vec<u8>, count: usize) -> usize {
+  let mut reader = Cursor::new(bytes);
+  let mut rest = Vec::new();
+
+  for _ in 0..count {
+    let msg = block_on(decode(&mut reader, &mut rest)).unwrap();
+    black_box(msg);
+  }
+  black_box(rest.len());
+  count
+}
+
+fn read_u32(input: &mut &[u8]) -> u32 {
+  let (bytes, rest) = input.split_at(std::mem::size_of::<u32>());
+  *input = rest;
+  u32::from_le_bytes(bytes.try_into().unwrap())
+}
+
+fn redraw_event_names(bytes: &[u8]) -> Vec<String> {
+  let mut input = bytes;
+  let value = read_value(&mut input).unwrap();
+  let Value::Array(items) = value else {
+    return Vec::new();
+  };
+  let Some(Value::Array(events)) = items.get(2) else {
+    return Vec::new();
+  };
+
+  events
+    .iter()
+    .filter_map(|event| {
+      let Value::Array(event_items) = event else {
+        return None;
+      };
+      event_items.first()?.as_str().map(str::to_owned)
+    })
+    .collect()
+}
+
+fn nvim_ui_fixture() -> Vec<CapturedMessage> {
+  let mut input = NVIM_UI_FIXTURE;
+  let (magic, rest) = input.split_at(FIXTURE_MAGIC.len());
+  assert_eq!(magic, FIXTURE_MAGIC);
+  input = rest;
+
+  let count = read_u32(&mut input) as usize;
+  let mut messages = Vec::with_capacity(count);
+
+  for _ in 0..count {
+    let len = read_u32(&mut input) as usize;
+    let (bytes, rest) = input.split_at(len);
+    input = rest;
+    messages.push(CapturedMessage {
+      bytes: bytes.to_vec(),
+      event_names: redraw_event_names(bytes),
+    });
+  }
+
+  messages
+}
+
+fn selected_ui_inputs(captured: &[CapturedMessage]) -> Vec<BenchInput> {
+  let mut selected = Vec::new();
+  let mut used = HashSet::new();
+
+  push_ui_input(
+    &mut selected,
+    &mut used,
+    captured,
+    "nvim_ui_initial_redraw",
+    (!captured.is_empty()).then_some(0),
+  );
+  let index = first_unused_ui_input(captured, &used, |msg| {
+    msg.event_names.iter().any(|event| event == "grid_resize")
+  });
+  push_ui_input(
+    &mut selected,
+    &mut used,
+    captured,
+    "nvim_ui_grid_resize",
+    index,
+  );
+
+  let index = first_unused_ui_input(captured, &used, |msg| {
+    msg.event_names.iter().any(|event| event == "grid_line")
+  });
+  push_ui_input(
+    &mut selected,
+    &mut used,
+    captured,
+    "nvim_ui_grid_line",
+    index,
+  );
+
+  let index = first_unused_ui_input(captured, &used, |msg| {
+    msg
+      .event_names
+      .iter()
+      .any(|event| event == "msg_show" || event == "cmdline_show")
+  });
+  push_ui_input(&mut selected, &mut used, captured, "nvim_ui_message", index);
+
+  let index = largest_unused_ui_input(captured, &used);
+  push_ui_input(
+    &mut selected,
+    &mut used,
+    captured,
+    "nvim_ui_largest_redraw",
+    index,
+  );
+
+  selected
+}
+
+fn push_ui_input(
+  selected: &mut Vec<BenchInput>,
+  used: &mut HashSet<usize>,
+  captured: &[CapturedMessage],
+  name: &str,
+  index: Option<usize>,
+) {
+  let Some(index) = index else {
+    return;
+  };
+  if used.insert(index) {
+    selected.push(BenchInput {
+      name: name.to_owned(),
+      bytes: captured[index].bytes.clone(),
+    });
+  }
+}
+
+fn first_unused_ui_input(
+  captured: &[CapturedMessage],
+  used: &HashSet<usize>,
+  pred: impl Fn(&CapturedMessage) -> bool,
+) -> Option<usize> {
+  captured
+    .iter()
+    .enumerate()
+    .position(|(index, msg)| !used.contains(&index) && pred(msg))
+}
+
+fn largest_unused_ui_input(
+  captured: &[CapturedMessage],
+  used: &HashSet<usize>,
+) -> Option<usize> {
+  captured
+    .iter()
+    .enumerate()
+    .filter(|(index, _)| !used.contains(index))
+    .max_by_key(|(_, msg)| msg.bytes.len())
+    .map(|(index, _)| index)
+}
+
+fn rpc_decode(c: &mut Criterion) {
+  let small = encode_message(small_request());
+  let large = encode_message(large_notification(128));
+  let captured_ui = nvim_ui_fixture();
+
+  let batch_count = 256;
+  let small_batch = repeated_messages(&small, batch_count);
+
+  let mut group = c.benchmark_group("rpc_decode");
+
+  group.throughput(Throughput::Bytes(small.len() as u64));
+  group.bench_function("single_small_from_reader", |b| {
+    b.iter_batched(
+      || small.clone(),
+      |bytes| black_box(decode_one_from_reader(bytes)),
+      BatchSize::SmallInput,
+    );
+  });
+
+  group.throughput(Throughput::Bytes(small.len() as u64));
+  group.bench_function("single_small_from_rest", |b| {
+    b.iter_batched(
+      || small.clone(),
+      |bytes| black_box(decode_one_from_rest(bytes)),
+      BatchSize::SmallInput,
+    );
+  });
+
+  group.throughput(Throughput::Bytes(large.len() as u64));
+  group.bench_function("single_large_from_reader", |b| {
+    b.iter_batched(
+      || large.clone(),
+      |bytes| black_box(decode_one_from_reader(bytes)),
+      BatchSize::SmallInput,
+    );
+  });
+
+  group.throughput(Throughput::Bytes(small_batch.len() as u64));
+  group.bench_function("small_batch_from_reader", |b| {
+    b.iter_batched(
+      || small_batch.clone(),
+      |bytes| black_box(decode_many_from_reader(bytes, batch_count)),
+      BatchSize::SmallInput,
+    );
+  });
+
+  for input in selected_ui_inputs(&captured_ui) {
+    group.throughput(Throughput::Bytes(input.bytes.len() as u64));
+    group.bench_with_input(
+      BenchmarkId::new("single_from_actual_nvim", &input.name),
+      &input.bytes,
+      |b, bytes| {
+        b.iter_batched(
+          || bytes.clone(),
+          |bytes| black_box(decode_one_from_reader(bytes)),
+          BatchSize::SmallInput,
+        );
+      },
+    );
+  }
+
+  let ui_batch_count = captured_ui.len();
+  let ui_batch = captured_ui
+    .iter()
+    .flat_map(|msg| msg.bytes.iter().copied())
+    .collect::<Vec<_>>();
+  group.throughput(Throughput::Bytes(ui_batch.len() as u64));
+  group.bench_function("actual_nvim_ui_batch_from_reader", |b| {
+    b.iter_batched(
+      || ui_batch.clone(),
+      |bytes| black_box(decode_many_from_reader(bytes, ui_batch_count)),
+      BatchSize::SmallInput,
+    );
+  });
+
+  group.finish();
+}
+
+criterion_group!(name = benches; config = Criterion::default().without_plots(); targets = rpc_decode);
+criterion_main!(benches);

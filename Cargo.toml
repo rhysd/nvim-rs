@@ -60,6 +60,10 @@ name = "rpc_tokio"
 harness = false
 required-features = ["use_tokio"]
 
+[[bench]]
+name = "rpc_decode"
+harness = false
+
 [[example]]
 name = "handler_drop"
 required-features = ["use_tokio"]
