@@ -9,6 +9,8 @@ use std::collections::HashSet;
 
 const NVIM_UI_FIXTURE: &[u8] =
   include_bytes!("fixtures/nvim_ui_notifications.bin");
+const NVIM_UI_SCROLL_FIXTURE: &[u8] =
+  include_bytes!("fixtures/nvim_ui_scroll_notifications.bin");
 const FIXTURE_MAGIC: &[u8] = b"NVIMRSUI1\n";
 
 #[derive(Clone)]
@@ -72,8 +74,8 @@ fn redraw_event_names(bytes: &[u8]) -> Vec<String> {
     .collect()
 }
 
-fn nvim_ui_fixture() -> Vec<CapturedMessage> {
-  let mut input = NVIM_UI_FIXTURE;
+fn nvim_ui_fixture(fixture: &[u8]) -> Vec<CapturedMessage> {
+  let mut input = fixture;
   let (magic, rest) = input.split_at(FIXTURE_MAGIC.len());
   assert_eq!(magic, FIXTURE_MAGIC);
   input = rest;
@@ -189,7 +191,8 @@ fn largest_unused_ui_input(
 }
 
 fn rpc_decode(c: &mut Criterion) {
-  let captured_ui = nvim_ui_fixture();
+  let captured_ui = nvim_ui_fixture(NVIM_UI_FIXTURE);
+  let captured_scroll_ui = nvim_ui_fixture(NVIM_UI_SCROLL_FIXTURE);
 
   let mut group = c.benchmark_group("rpc_decode");
 
@@ -234,6 +237,30 @@ fn rpc_decode(c: &mut Criterion) {
       BatchSize::SmallInput,
     );
   });
+
+  let scroll_ui_batch_count = captured_scroll_ui.len();
+  let scroll_ui_batch = captured_scroll_ui
+    .iter()
+    .flat_map(|msg| msg.bytes.iter().copied())
+    .collect::<Vec<_>>();
+  group.throughput(Throughput::Bytes(scroll_ui_batch.len() as u64));
+  group.bench_function(
+    "actual_nvim_ui_scroll_batch_from_reader_reused_state",
+    |b| {
+      let mut decoder = DecodeState::new();
+      b.iter_batched(
+        || scroll_ui_batch.clone(),
+        |bytes| {
+          black_box(decode_many_from_reader_with_state(
+            &mut decoder,
+            bytes,
+            scroll_ui_batch_count,
+          ))
+        },
+        BatchSize::SmallInput,
+      );
+    },
+  );
 
   group.finish();
 }

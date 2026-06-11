@@ -4,6 +4,8 @@ use std::{
   io::{self, Read, Write},
   path::{Path, PathBuf},
   process::{Command, Stdio},
+  thread,
+  time::Duration,
 };
 
 const FIXTURE_MAGIC: &[u8] = b"NVIMRSUI1\n";
@@ -129,6 +131,59 @@ fn read_until_response<R: Read>(
   ))
 }
 
+fn drain_redraw_notifications<R: Read>(
+  writer: &mut impl Write,
+  reader: &mut RecordingReader<R>,
+  msgid: &mut i64,
+  captured: &mut Vec<CapturedMessage>,
+) -> io::Result<()> {
+  *msgid += 1;
+  request(writer, *msgid, "nvim_eval", vec![Value::from("1")])?;
+  read_until_response(reader, *msgid, captured)
+}
+
+fn attach_ui<R: Read>(
+  writer: &mut impl Write,
+  reader: &mut RecordingReader<R>,
+  msgid: &mut i64,
+  captured: &mut Vec<CapturedMessage>,
+) -> io::Result<()> {
+  request(
+    writer,
+    *msgid,
+    "nvim_ui_attach",
+    vec![Value::from(80), Value::from(24), ui_options()],
+  )?;
+  read_until_response(reader, *msgid, captured)?;
+
+  // Drain attach-time redraw notifications before running the scenario.
+  drain_redraw_notifications(writer, reader, msgid, captured)
+}
+
+fn request_command<R: Read>(
+  writer: &mut impl Write,
+  reader: &mut RecordingReader<R>,
+  msgid: &mut i64,
+  command: &str,
+  captured: &mut Vec<CapturedMessage>,
+) -> io::Result<()> {
+  *msgid += 1;
+  request(writer, *msgid, "nvim_command", vec![Value::from(command)])?;
+  read_until_response(reader, *msgid, captured)
+}
+
+fn request_input<R: Read>(
+  writer: &mut impl Write,
+  reader: &mut RecordingReader<R>,
+  msgid: &mut i64,
+  keys: &str,
+  captured: &mut Vec<CapturedMessage>,
+) -> io::Result<()> {
+  *msgid += 1;
+  request(writer, *msgid, "nvim_input", vec![Value::from(keys)])?;
+  read_until_response(reader, *msgid, captured)
+}
+
 fn ui_options() -> Value {
   Value::Map(vec![
     (Value::from("rgb"), Value::from(true)),
@@ -150,7 +205,7 @@ fn nvim_path() -> PathBuf {
 
 fn capture_nvim_ui_notifications() -> io::Result<Vec<CapturedMessage>> {
   let mut child = Command::new(nvim_path())
-    .args(["-u", "NONE", "--embed", "--headless"])
+    .args(["--clean", "--embed", "--headless"])
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .stderr(Stdio::null())
@@ -166,13 +221,7 @@ fn capture_nvim_ui_notifications() -> io::Result<Vec<CapturedMessage>> {
   let mut captured = Vec::new();
   let mut msgid = 1;
 
-  request(
-    &mut stdin,
-    msgid,
-    "nvim_ui_attach",
-    vec![Value::from(80), Value::from(24), ui_options()],
-  )?;
-  read_until_response(&mut reader, msgid, &mut captured)?;
+  attach_ui(&mut stdin, &mut reader, &mut msgid, &mut captured)?;
 
   let lines = (0..80)
     .map(|i| {
@@ -202,19 +251,21 @@ fn capture_nvim_ui_notifications() -> io::Result<Vec<CapturedMessage>> {
     "vsplit | split | tabnew | enew",
     "redraw",
   ] {
-    msgid += 1;
-    request(
+    request_command(
       &mut stdin,
-      msgid,
-      "nvim_command",
-      vec![Value::from(command)],
+      &mut reader,
+      &mut msgid,
+      command,
+      &mut captured,
     )?;
-    read_until_response(&mut reader, msgid, &mut captured)?;
   }
 
-  msgid += 1;
-  request(&mut stdin, msgid, "nvim_eval", vec![Value::from("1")])?;
-  read_until_response(&mut reader, msgid, &mut captured)?;
+  drain_redraw_notifications(
+    &mut stdin,
+    &mut reader,
+    &mut msgid,
+    &mut captured,
+  )?;
 
   let _ = request(
     &mut stdin,
@@ -225,6 +276,58 @@ fn capture_nvim_ui_notifications() -> io::Result<Vec<CapturedMessage>> {
   drop(stdin);
   let _ = child.kill();
   let _ = child.wait();
+
+  Ok(captured)
+}
+
+fn capture_nvim_ui_scroll_notifications() -> io::Result<Vec<CapturedMessage>> {
+  let cargo_lock = env::current_dir()?.join("Cargo.lock");
+  if !cargo_lock.is_file() {
+    return Err(io::Error::new(
+      io::ErrorKind::NotFound,
+      format!("{} does not exist", cargo_lock.display()),
+    ));
+  }
+
+  let mut child = Command::new(nvim_path())
+    .args(["--clean", "--embed", "--headless"])
+    .arg(cargo_lock)
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null())
+    .spawn()?;
+
+  let mut stdin = child.stdin.take().ok_or_else(|| {
+    io::Error::new(io::ErrorKind::BrokenPipe, "missing stdin")
+  })?;
+  let stdout = child.stdout.take().ok_or_else(|| {
+    io::Error::new(io::ErrorKind::BrokenPipe, "missing stdout")
+  })?;
+  let mut reader = RecordingReader::new(stdout);
+  let mut captured = Vec::new();
+  let mut msgid = 1;
+
+  attach_ui(&mut stdin, &mut reader, &mut msgid, &mut captured)?;
+
+  for _ in 0..20 {
+    request_input(&mut stdin, &mut reader, &mut msgid, "<C-D>", &mut captured)?;
+    thread::sleep(Duration::from_millis(500));
+  }
+
+  drain_redraw_notifications(
+    &mut stdin,
+    &mut reader,
+    &mut msgid,
+    &mut captured,
+  )?;
+
+  let _ =
+    request_command(&mut stdin, &mut reader, &mut msgid, "quit", &mut captured);
+  drop(stdin);
+  let status = child.wait()?;
+  if !status.success() {
+    return Err(io::Error::other(format!("nvim exited with {status}")));
+  }
 
   Ok(captured)
 }
@@ -257,14 +360,23 @@ fn output_path() -> PathBuf {
   })
 }
 
-fn main() -> io::Result<()> {
-  let output = output_path();
-  let captured = capture_nvim_ui_notifications()?;
-  write_fixture(&output, &captured)?;
+fn scroll_output_path(init_output: &Path) -> PathBuf {
+  init_output
+    .parent()
+    .unwrap_or_else(|| Path::new("."))
+    .join("nvim_ui_scroll_notifications.bin")
+}
+
+fn write_and_report_fixture(
+  label: &str,
+  output: &Path,
+  captured: &[CapturedMessage],
+) -> io::Result<()> {
+  write_fixture(output, captured)?;
 
   let total_bytes: usize = captured.iter().map(|msg| msg.bytes.len()).sum();
   println!(
-    "wrote {} nvim UI notifications ({} bytes) to {}",
+    "wrote {label}: {} nvim UI notifications ({} bytes) to {}",
     captured.len(),
     total_bytes,
     output.display()
@@ -272,11 +384,24 @@ fn main() -> io::Result<()> {
 
   for (index, msg) in captured.iter().enumerate() {
     println!(
-      "{index:>2}: {:>6} bytes {:?}",
+      "{label} {index:>2}: {:>6} bytes {:?}",
       msg.bytes.len(),
       msg.event_names
     );
   }
+
+  Ok(())
+}
+
+fn main() -> io::Result<()> {
+  let init_output = output_path();
+  let scroll_output = scroll_output_path(&init_output);
+
+  let captured = capture_nvim_ui_notifications()?;
+  write_and_report_fixture("init", &init_output, &captured)?;
+
+  let captured = capture_nvim_ui_scroll_notifications()?;
+  write_and_report_fixture("scroll", &scroll_output, &captured)?;
 
   Ok(())
 }
