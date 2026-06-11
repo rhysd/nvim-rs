@@ -10,7 +10,11 @@ use futures::{
   io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
   lock::Mutex,
 };
-use rmp::{decode::ValueReadError, Marker};
+use rmp::{
+  decode::ValueReadError,
+  encode::{write_array_len, write_str, write_uint},
+  Marker,
+};
 use rmpv::{decode::read_value, encode::write_value, Value};
 
 use crate::error::{DecodeError, EncodeError};
@@ -35,15 +39,6 @@ pub enum RpcMessage {
     method: String,
     params: Vec<Value>,
   }, // 2
-}
-
-macro_rules! rpc_args {
-    ($($e:expr), *) => {{
-        let vec = vec![
-          $(Value::from($e),)*
-        ];
-        Value::from(vec)
-    }}
 }
 
 /// State reused while decoding msgpack-rpc messages from a stream.
@@ -384,6 +379,18 @@ fn read_value_from_marker<R: Read>(
   read_value(&mut value_reader).map_err(Into::into)
 }
 
+fn write_value_array<W: Write>(
+  writer: &mut W,
+  values: &[Value],
+) -> Result<(), Box<EncodeError>> {
+  write_array_len(writer, values.len() as u32)?;
+  for value in values {
+    write_value(writer, value)?;
+  }
+
+  Ok(())
+}
+
 /// Encode the given message into the `writer`.
 pub fn encode_sync<W: Write>(
   writer: &mut W,
@@ -395,20 +402,28 @@ pub fn encode_sync<W: Write>(
       method,
       params,
     } => {
-      let val = rpc_args!(0, msgid, method, params);
-      write_value(writer, &val)?;
+      write_array_len(writer, 4)?;
+      write_uint(writer, 0)?;
+      write_uint(writer, msgid)?;
+      write_str(writer, &method)?;
+      write_value_array(writer, &params)?;
     }
     RpcMessage::RpcResponse {
       msgid,
       error,
       result,
     } => {
-      let val = rpc_args!(1, msgid, error, result);
-      write_value(writer, &val)?;
+      write_array_len(writer, 4)?;
+      write_uint(writer, 1)?;
+      write_uint(writer, msgid)?;
+      write_value(writer, &error)?;
+      write_value(writer, &result)?;
     }
     RpcMessage::RpcNotification { method, params } => {
-      let val = rpc_args!(2, method, params);
-      write_value(writer, &val)?;
+      write_array_len(writer, 3)?;
+      write_uint(writer, 2)?;
+      write_str(writer, &method)?;
+      write_value_array(writer, &params)?;
     }
   };
 
@@ -566,6 +581,52 @@ mod decode_state_tests {
     let mut bytes = Vec::new();
     write_value(&mut bytes, &value).unwrap();
     bytes
+  }
+
+  #[test]
+  fn encode_sync_matches_outer_value_encoding() {
+    let request = RpcMessage::RpcRequest {
+      msgid: 7,
+      method: "nvim_input".to_owned(),
+      params: vec![Value::from("<C-D>")],
+    };
+    assert_eq!(
+      encoded(request),
+      encoded_value(Value::from(vec![
+        Value::from(0),
+        Value::from(7),
+        Value::from("nvim_input"),
+        Value::from(vec![Value::from("<C-D>")]),
+      ]))
+    );
+
+    let response = RpcMessage::RpcResponse {
+      msgid: 8,
+      error: Value::Nil,
+      result: Value::from(true),
+    };
+    assert_eq!(
+      encoded(response),
+      encoded_value(Value::from(vec![
+        Value::from(1),
+        Value::from(8),
+        Value::Nil,
+        Value::from(true),
+      ]))
+    );
+
+    let notification = RpcMessage::RpcNotification {
+      method: "redraw".to_owned(),
+      params: vec![Value::from(vec![Value::from("flush")])],
+    };
+    assert_eq!(
+      encoded(notification),
+      encoded_value(Value::from(vec![
+        Value::from(2),
+        Value::from("redraw"),
+        Value::from(vec![Value::from(vec![Value::from("flush")])]),
+      ]))
+    );
   }
 
   #[test]
