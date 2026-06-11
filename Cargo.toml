@@ -61,7 +61,7 @@ harness = false
 required-features = ["use_tokio"]
 
 [[bench]]
-name = "rpc_decode"
+name = "rpc"
 harness = false
 
 [[example]]

@@ -2,10 +2,14 @@ use criterion::{
   black_box, criterion_group, criterion_main, BatchSize, BenchmarkId,
   Criterion, Throughput,
 };
-use futures::{executor::block_on, io::Cursor};
-use navy_nvim_rs::rpc::model::{DecodeState, RpcMessage};
+use futures::{
+  executor::block_on,
+  io::{sink, Cursor},
+  lock::Mutex,
+};
+use navy_nvim_rs::rpc::model::{encode, DecodeState, RpcMessage};
 use rmpv::{decode::read_value, Value};
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 const NVIM_UI_FIXTURE: &[u8] =
   include_bytes!("fixtures/nvim_ui_notifications.bin");
@@ -23,6 +27,19 @@ struct CapturedMessage {
 struct BenchInput {
   name: String,
   bytes: Vec<u8>,
+}
+
+fn encode_request_message() -> RpcMessage {
+  RpcMessage::RpcRequest {
+    msgid: 1,
+    method: "nvim_buf_get_lines".to_owned(),
+    params: vec![
+      Value::from(0),
+      Value::from(0),
+      Value::from(-1),
+      Value::from(false),
+    ],
+  }
 }
 
 fn decode_one_from_reader_with_state(
@@ -190,11 +207,27 @@ fn largest_unused_ui_input(
     .map(|(index, _)| index)
 }
 
-fn rpc_decode(c: &mut Criterion) {
+fn bench_encode(c: &mut Criterion) {
+  let msg = encode_request_message();
+  let mut group = c.benchmark_group("rpc/encode");
+
+  group.bench_function("request", |b| {
+    let writer = Arc::new(Mutex::new(sink()));
+    b.iter_batched(
+      || msg.clone(),
+      |msg| black_box(block_on(encode(writer.clone(), msg)).unwrap()),
+      BatchSize::SmallInput,
+    );
+  });
+
+  group.finish();
+}
+
+fn bench_decode(c: &mut Criterion) {
   let captured_ui = nvim_ui_fixture(NVIM_UI_FIXTURE);
   let captured_scroll_ui = nvim_ui_fixture(NVIM_UI_SCROLL_FIXTURE);
 
-  let mut group = c.benchmark_group("rpc_decode");
+  let mut group = c.benchmark_group("rpc/decode");
 
   for input in selected_ui_inputs(&captured_ui) {
     group.throughput(Throughput::Bytes(input.bytes.len() as u64));
@@ -265,5 +298,10 @@ fn rpc_decode(c: &mut Criterion) {
   group.finish();
 }
 
-criterion_group!(name = benches; config = Criterion::default().without_plots(); targets = rpc_decode);
+fn rpc(c: &mut Criterion) {
+  bench_encode(c);
+  bench_decode(c);
+}
+
+criterion_group!(name = benches; config = Criterion::default().without_plots(); targets = rpc);
 criterion_main!(benches);
