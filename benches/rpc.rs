@@ -1,16 +1,16 @@
 use criterion::{
-  black_box, criterion_group, criterion_main, BatchSize, BenchmarkId,
-  Criterion, Throughput,
+  BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group,
+  criterion_main,
 };
 use futures::{
   executor::block_on,
-  io::{sink, Cursor},
+  io::{Cursor, sink},
   lock::Mutex,
 };
 use navy_nvim_rs::rpc::model::{
-  encode_with_state, DecodeState, EncodeState, RpcMessage,
+  DecodeState, EncodeState, RpcMessage, encode_with_state,
 };
-use rmpv::{decode::read_value, Value};
+use rmpv::{Value, decode::read_value};
 use std::{collections::HashSet, sync::Arc};
 
 const NVIM_UI_FIXTURE: &[u8] =

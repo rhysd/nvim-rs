@@ -1,4 +1,4 @@
-use rmpv::{decode::read_value, encode::write_value, Value};
+use rmpv::{Value, decode::read_value, encode::write_value};
 use std::{
   env, fs,
   io::{self, Read, Write},

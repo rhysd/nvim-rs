@@ -7,7 +7,7 @@ use rmpv::Value;
 use tokio::fs::File as TokioFile;
 
 use navy_nvim_rs::{
-  compat::tokio::Compat, create::tokio as create, rpc::IntoVal, Handler, Neovim,
+  Handler, Neovim, compat::tokio::Compat, create::tokio as create, rpc::IntoVal,
 };
 
 #[derive(Clone)]

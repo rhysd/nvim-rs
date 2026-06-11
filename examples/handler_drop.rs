@@ -1,7 +1,7 @@
 //! How to handle cleanup logic with access to the handler's data. See
 //! src/examples/handler_drop.rs for documentation.
 use navy_nvim_rs::{
-  compat::tokio::Compat, create::tokio as create, Handler, Neovim, Value,
+  Handler, Neovim, Value, compat::tokio::Compat, create::tokio as create,
 };
 
 use tokio::process::{ChildStdin, Command};

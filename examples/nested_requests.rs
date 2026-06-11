@@ -1,5 +1,5 @@
 use navy_nvim_rs::{
-  compat::tokio::Compat, create::tokio as create, neovim::Neovim, Handler,
+  Handler, compat::tokio::Compat, create::tokio as create, neovim::Neovim,
 };
 
 use rmpv::Value;

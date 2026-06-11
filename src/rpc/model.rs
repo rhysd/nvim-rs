@@ -11,11 +11,11 @@ use futures::{
   lock::Mutex,
 };
 use rmp::{
+  Marker,
   decode::ValueReadError,
   encode::{write_array_len, write_str, write_uint},
-  Marker,
 };
-use rmpv::{decode::read_value, encode::write_value, Value};
+use rmpv::{Value, decode::read_value, encode::write_value};
 
 use crate::error::{DecodeError, EncodeError};
 
@@ -87,10 +87,10 @@ impl DecodeState {
     R: AsyncRead + Send + Unpin + 'static,
   {
     loop {
-      if self.has_rest() {
-        if let Some(msg) = self.try_decode_rest()? {
-          return Ok(msg);
-        }
+      if self.has_rest()
+        && let Some(msg) = self.try_decode_rest()?
+      {
+        return Ok(msg);
       }
 
       debug!("Not enough data, reading more!");
@@ -187,13 +187,13 @@ pub async fn decode<R: AsyncRead + Send + Unpin + 'static>(
   result
 }
 
-struct OuterArrayReader<'a, R> {
+struct EnvelopeReader<'a, R> {
   reader: &'a mut R,
   len: u64,
   read: u64,
 }
 
-impl<'a, R: Read> OuterArrayReader<'a, R> {
+impl<'a, R: Read> EnvelopeReader<'a, R> {
   #[inline]
   fn new(reader: &'a mut R) -> Result<Self, Box<DecodeError>> {
     let len = Self::read_len(reader)?;
@@ -292,7 +292,7 @@ impl RpcMessage {
   fn decode<R: Read>(reader: &mut R) -> Result<Self, Box<DecodeError>> {
     use crate::error::InvalidMessage::*;
 
-    let mut fields = OuterArrayReader::new(reader)?;
+    let mut fields = EnvelopeReader::new(reader)?;
     if fields.len() == 0 {
       return Err(WrongArrayLength(3..=4, fields.len()).into());
     }
@@ -308,7 +308,7 @@ impl RpcMessage {
   }
 
   fn decode_request<R: Read>(
-    mut fields: OuterArrayReader<'_, R>,
+    mut fields: EnvelopeReader<'_, R>,
   ) -> Result<Self, Box<DecodeError>> {
     use crate::error::InvalidMessage::*;
 
@@ -332,7 +332,7 @@ impl RpcMessage {
   }
 
   fn decode_response<R: Read>(
-    mut fields: OuterArrayReader<'_, R>,
+    mut fields: EnvelopeReader<'_, R>,
   ) -> Result<Self, Box<DecodeError>> {
     use crate::error::InvalidMessage::*;
 
@@ -351,7 +351,7 @@ impl RpcMessage {
   }
 
   fn decode_notification<R: Read>(
-    mut fields: OuterArrayReader<'_, R>,
+    mut fields: EnvelopeReader<'_, R>,
   ) -> Result<Self, Box<DecodeError>> {
     use crate::error::InvalidMessage::*;
 
@@ -497,7 +497,7 @@ pub trait IntoVal<T> {
   fn into_val(self) -> T;
 }
 
-impl<'a> IntoVal<Value> for &'a str {
+impl IntoVal<Value> for &str {
   fn into_val(self) -> Value {
     Value::from(self)
   }
@@ -630,7 +630,7 @@ mod decode_state_tests {
   }
 
   #[test]
-  fn outer_array_reader_reads_fields_and_skips_extras() {
+  fn envelope_reader_reads_fields_and_skips_extras() {
     let mut bytes = encoded_value(Value::from(vec![
       Value::from(1),
       Value::from(vec![Value::from(2), Value::from(3)]),
@@ -639,7 +639,7 @@ mod decode_state_tests {
     bytes.extend_from_slice(&encoded_value(Value::from("tail")));
 
     let mut input = bytes.as_slice();
-    let mut fields = OuterArrayReader::new(&mut input).unwrap();
+    let mut fields = EnvelopeReader::new(&mut input).unwrap();
 
     assert_eq!(fields.len(), 3);
     assert_eq!(fields.read, 0);
@@ -657,14 +657,14 @@ mod decode_state_tests {
   }
 
   #[test]
-  fn outer_array_reader_reports_non_array_params_as_value() {
+  fn envelope_reader_reports_non_array_params_as_value() {
     let bytes = encoded_value(Value::from(vec![
       Value::from(2),
       Value::from("not-array"),
       Value::from("extra"),
     ]));
     let mut input = bytes.as_slice();
-    let mut fields = OuterArrayReader::new(&mut input).unwrap();
+    let mut fields = EnvelopeReader::new(&mut input).unwrap();
 
     assert_eq!(fields.read_value().unwrap(), Value::from(2));
     let err = fields.read_params("redraw").unwrap_err();

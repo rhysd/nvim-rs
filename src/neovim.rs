@@ -2,14 +2,15 @@
 use std::{
   future::Future,
   sync::{
-    atomic::{AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicU64, Ordering},
   },
 };
 
 use futures::{
+  TryFutureExt,
   channel::{
-    mpsc::{unbounded, UnboundedReceiver, UnboundedSender},
+    mpsc::{UnboundedReceiver, UnboundedSender, unbounded},
     oneshot,
   },
   future,
@@ -17,7 +18,6 @@ use futures::{
   lock::Mutex,
   sink::SinkExt,
   stream::StreamExt,
-  TryFutureExt,
 };
 
 use crate::{
@@ -37,8 +37,8 @@ use rmpv::Value;
 #[macro_export]
 macro_rules! call_args {
     () => (Vec::new());
-    ($($e:expr), +,) => (call_args![$($e),*]);
-    ($($e:expr), +) => {{
+    ($($e:expr_2021), +,) => (call_args![$($e),*]);
+    ($($e:expr_2021), +) => {{
         let vec = vec![
           $($e.into_val(),)*
         ];
@@ -132,7 +132,7 @@ where
   ) -> Result<
     (
       Neovim<<H as Handler>::Writer>,
-      impl Future<Output = Result<(), Box<LoopError>>>,
+      impl Future<Output = Result<(), Box<LoopError>>> + use<H, R, W>,
     ),
     Box<HandshakeError>,
   >
@@ -338,7 +338,8 @@ where
           });
         }
         RpcMessage::RpcNotification { method, params } => {
-          handler.handle_notify(method, params, self.clone()).await
+          let neovim = self.clone();
+          handler.handle_notify(method, params, neovim).await;
         }
         RpcMessage::RpcResponse { .. } => unreachable!(),
       }
@@ -428,7 +429,8 @@ async fn find_sender(
     Some(p) => p,
     None => return Err(msgid.into()),
   };
-  Ok(queue.remove(pos).1)
+  let sender = queue.remove(pos).1;
+  Ok(sender)
 }
 
 #[cfg(all(test, feature = "use_tokio"))]

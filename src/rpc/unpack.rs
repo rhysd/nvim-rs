@@ -39,11 +39,7 @@ impl TryUnpack<Value> for Value {
 
 impl TryUnpack<()> for Value {
   fn try_unpack(self) -> Result<(), Value> {
-    if self.is_nil() {
-      Ok(())
-    } else {
-      Err(self)
-    }
+    if self.is_nil() { Ok(()) } else { Err(self) }
   }
 }
 
@@ -61,12 +57,12 @@ impl TryUnpack<String> for Value {
 
 impl TryUnpack<(i64, i64)> for Value {
   fn try_unpack(self) -> Result<(i64, i64), Value> {
-    if let Value::Array(ref v) = self {
-      if v.len() == 2 {
-        let mut vi = v.iter().map(Value::as_i64);
-        if let (Some(Some(i)), Some(Some(j))) = (vi.next(), vi.next()) {
-          return Ok((i, j));
-        }
+    if let Value::Array(ref v) = self
+      && v.len() == 2
+    {
+      let mut vi = v.iter().map(Value::as_i64);
+      if let (Some(Some(i)), Some(Some(j))) = (vi.next(), vi.next()) {
+        return Ok((i, j));
       }
     }
     Err(self)

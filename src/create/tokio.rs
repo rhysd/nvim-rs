@@ -9,7 +9,7 @@ use std::{
 
 use tokio::{
   fs::File as TokioFile,
-  io::{split, stdin, WriteHalf},
+  io::{WriteHalf, split, stdin},
   net::{TcpStream, ToSocketAddrs},
   process::{Child, ChildStdin, Command},
   spawn,
@@ -26,10 +26,10 @@ use tokio_util::compat::{
 };
 
 use crate::{
-  create::{unbuffered_stdout, Spawner},
+  Handler,
+  create::{Spawner, unbuffered_stdout},
   error::{HandshakeError, LoopError},
   neovim::Neovim,
-  Handler,
 };
 
 impl<H> Spawner for H

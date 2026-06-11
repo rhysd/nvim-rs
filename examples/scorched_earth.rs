@@ -7,7 +7,7 @@ use futures::lock::Mutex;
 use tokio::fs::File as TokioFile;
 
 use navy_nvim_rs::{
-  compat::tokio::Compat, create::tokio as create, Handler, Neovim,
+  Handler, Neovim, compat::tokio::Compat, create::tokio as create,
 };
 
 struct Posis {

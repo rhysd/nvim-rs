@@ -42,7 +42,7 @@ use std::{
 
 use futures::channel::oneshot;
 use rmpv::{
-  decode::Error as RmpvDecodeError, encode::Error as RmpvEncodeError, Value,
+  Value, decode::Error as RmpvDecodeError, encode::Error as RmpvEncodeError,
 };
 
 /// A message from neovim had an invalid format
@@ -267,13 +267,13 @@ impl CallError {
       CallError::SendError(EncodeError::WriterError(ref e), _)
         if e.kind() == ErrorKind::UnexpectedEof =>
       {
-        return true
+        return true;
       }
       CallError::DecodeError(ref err, _) => {
-        if let DecodeError::ReaderError(ref e) = err.as_ref() {
-          if e.kind() == ErrorKind::UnexpectedEof {
-            return true;
-          }
+        if let DecodeError::ReaderError(e) = err.as_ref()
+          && e.kind() == ErrorKind::UnexpectedEof
+        {
+          return true;
         }
       }
       _ => {}
@@ -363,22 +363,21 @@ impl Error for LoopError {
 impl LoopError {
   #[must_use]
   pub fn is_channel_closed(&self) -> bool {
-    if let LoopError::DecodeError(ref err, _) = *self {
-      if let DecodeError::ReaderError(ref e) = err.as_ref() {
-        if e.kind() == ErrorKind::UnexpectedEof {
-          return true;
-        }
-      }
+    if let LoopError::DecodeError(ref err, _) = *self
+      && let DecodeError::ReaderError(e) = err.as_ref()
+      && e.kind() == ErrorKind::UnexpectedEof
+    {
+      return true;
     }
     false
   }
 
   #[must_use]
   pub fn is_reader_error(&self) -> bool {
-    if let LoopError::DecodeError(ref err, _) = *self {
-      if let DecodeError::ReaderError(_) = err.as_ref() {
-        return true;
-      }
+    if let LoopError::DecodeError(ref err, _) = *self
+      && let DecodeError::ReaderError(_) = err.as_ref()
+    {
+      return true;
     }
     false
   }

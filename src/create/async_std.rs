@@ -9,7 +9,7 @@ use async_std::{
   fs::File as ASFile,
   io::stdin,
   net::{TcpStream, ToSocketAddrs},
-  task::{spawn, JoinHandle},
+  task::{JoinHandle, spawn},
 };
 
 #[cfg(unix)]
@@ -18,10 +18,10 @@ use async_std::path::Path;
 use futures::io::{AsyncReadExt, WriteHalf};
 
 use crate::{
-  create::{unbuffered_stdout, Spawner},
+  Handler,
+  create::{Spawner, unbuffered_stdout},
   error::LoopError,
   neovim::Neovim,
-  Handler,
 };
 
 impl<H> Spawner for H

@@ -4,10 +4,10 @@
 use futures::io::AsyncWrite;
 
 use crate::{
+  Buffer, Tabpage, Window,
   error::CallError,
   neovim::*,
   rpc::{unpack::TryUnpack, *},
-  Buffer, Tabpage, Window,
 };
 
 impl<W> Buffer<W>

@@ -3,8 +3,8 @@ use std::{sync::Arc, time::Duration};
 use tokio::{
   process::{ChildStdin, Command},
   sync::{
-    mpsc::{unbounded_channel, UnboundedSender},
     Notify,
+    mpsc::{UnboundedSender, unbounded_channel},
   },
   task::yield_now,
 };
@@ -12,7 +12,7 @@ use tokio::{
 use futures::FutureExt;
 
 use navy_nvim_rs::{
-  self, compat::tokio::Compat, create::tokio as create, neovim::Neovim, Value,
+  self, Value, compat::tokio::Compat, create::tokio as create, neovim::Neovim,
 };
 
 mod common;

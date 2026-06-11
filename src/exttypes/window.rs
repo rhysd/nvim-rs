@@ -3,7 +3,7 @@ use rmpv::Value;
 
 use super::{Buffer, Tabpage};
 use crate::{
-  error::CallError, impl_exttype_traits, rpc::model::IntoVal, Neovim,
+  Neovim, error::CallError, impl_exttype_traits, rpc::model::IntoVal,
 };
 
 /// A struct representing a neovim window. It is specific to a

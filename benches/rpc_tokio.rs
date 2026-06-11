@@ -1,9 +1,9 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 use navy_nvim_rs::{
   call_args,
   create::tokio as create,
-  rpc::{handler::Dummy, IntoVal},
+  rpc::{IntoVal, handler::Dummy},
 };
 
 use tokio::{process::Command, runtime::Builder};
