@@ -146,7 +146,7 @@ where
       queue: Arc::new(Mutex::new(Vec::new())),
     };
 
-    let msgid = instance.msgid_counter.fetch_add(1, Ordering::SeqCst);
+    let msgid = instance.msgid_counter.fetch_add(1, Ordering::Relaxed);
     // Nvim encodes fixed size strings with a length of 20-31 bytes wrong, so
     // avoid that
     let msg_len = message.len();
@@ -218,7 +218,7 @@ where
     method: &str,
     args: Vec<Value>,
   ) -> Result<oneshot::Receiver<ResponseResult>, Box<EncodeError>> {
-    let msgid = self.msgid_counter.fetch_add(1, Ordering::SeqCst);
+    let msgid = self.msgid_counter.fetch_add(1, Ordering::Relaxed);
 
     let req = RpcMessage::RpcRequest {
       msgid,
