@@ -44,6 +44,14 @@ fn encode_request_message() -> RpcMessage {
   }
 }
 
+fn encode_input_message(keys: &str) -> RpcMessage {
+  RpcMessage::RpcRequest {
+    msgid: 1,
+    method: "nvim_input".to_owned(),
+    params: vec![Value::from(keys)],
+  }
+}
+
 fn decode_one_from_reader_with_state(
   decoder: &mut DecodeState,
   bytes: Vec<u8>,
@@ -210,13 +218,23 @@ fn largest_unused_ui_input(
 }
 
 fn bench_encode(c: &mut Criterion) {
-  let msg = encode_request_message();
+  let request_msg = encode_request_message();
+  let input_msg = encode_input_message("<C-D>");
   let mut group = c.benchmark_group("rpc/encode");
 
   group.bench_function("request", |b| {
     let state = Arc::new(Mutex::new(EncodeState::new(sink())));
     b.iter_batched(
-      || msg.clone(),
+      || request_msg.clone(),
+      |msg| black_box(block_on(encode_with_state(state.clone(), msg)).unwrap()),
+      BatchSize::SmallInput,
+    );
+  });
+
+  group.bench_function("nvim_input_ctrl_d", |b| {
+    let state = Arc::new(Mutex::new(EncodeState::new(sink())));
+    b.iter_batched(
+      || input_msg.clone(),
       |msg| black_box(block_on(encode_with_state(state.clone(), msg)).unwrap()),
       BatchSize::SmallInput,
     );
