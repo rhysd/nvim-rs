@@ -1,5 +1,5 @@
 use criterion::{
-  BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group,
+  BatchSize, BenchmarkId, Criterion, Throughput, criterion_group,
   criterion_main,
 };
 use futures::{
@@ -11,7 +11,7 @@ use navy_nvim_rs::rpc::model::{
   DecodeState, EncodeState, RpcMessage, encode_with_state,
 };
 use rmpv::{Value, decode::read_value};
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, hint::black_box, sync::Arc};
 
 const NVIM_UI_FIXTURE: &[u8] =
   include_bytes!("fixtures/nvim_ui_notifications.bin");
@@ -244,18 +244,15 @@ fn bench_encode(c: &mut Criterion) {
 }
 
 fn bench_decode(c: &mut Criterion) {
-  let captured_ui = nvim_ui_fixture(NVIM_UI_FIXTURE);
+  let captured_ui_init = nvim_ui_fixture(NVIM_UI_FIXTURE);
   let captured_scroll_ui = nvim_ui_fixture(NVIM_UI_SCROLL_FIXTURE);
 
   let mut group = c.benchmark_group("rpc/decode");
 
-  for input in selected_ui_inputs(&captured_ui) {
+  for input in selected_ui_inputs(&captured_ui_init) {
     group.throughput(Throughput::Bytes(input.bytes.len() as u64));
     group.bench_with_input(
-      BenchmarkId::new(
-        "single_actual_nvim_ui_from_reader_reused_state",
-        &input.name,
-      ),
+      BenchmarkId::new("single_nvim_ui_init", &input.name),
       &input.bytes,
       |b, bytes| {
         let mut decoder = DecodeState::new();
@@ -270,13 +267,13 @@ fn bench_decode(c: &mut Criterion) {
     );
   }
 
-  let ui_batch_count = captured_ui.len();
-  let ui_batch = captured_ui
+  let ui_batch_count = captured_ui_init.len();
+  let ui_batch = captured_ui_init
     .iter()
     .flat_map(|msg| msg.bytes.iter().copied())
     .collect::<Vec<_>>();
   group.throughput(Throughput::Bytes(ui_batch.len() as u64));
-  group.bench_function("actual_nvim_ui_batch_from_reader_reused_state", |b| {
+  group.bench_function("batch_nvim_ui_init", |b| {
     let mut decoder = DecodeState::new();
     b.iter_batched(
       || ui_batch.clone(),
@@ -297,23 +294,20 @@ fn bench_decode(c: &mut Criterion) {
     .flat_map(|msg| msg.bytes.iter().copied())
     .collect::<Vec<_>>();
   group.throughput(Throughput::Bytes(scroll_ui_batch.len() as u64));
-  group.bench_function(
-    "actual_nvim_ui_scroll_batch_from_reader_reused_state",
-    |b| {
-      let mut decoder = DecodeState::new();
-      b.iter_batched(
-        || scroll_ui_batch.clone(),
-        |bytes| {
-          black_box(decode_many_from_reader_with_state(
-            &mut decoder,
-            bytes,
-            scroll_ui_batch_count,
-          ))
-        },
-        BatchSize::SmallInput,
-      );
-    },
-  );
+  group.bench_function("batch_nvim_ui_scroll", |b| {
+    let mut decoder = DecodeState::new();
+    b.iter_batched(
+      || scroll_ui_batch.clone(),
+      |bytes| {
+        black_box(decode_many_from_reader_with_state(
+          &mut decoder,
+          bytes,
+          scroll_ui_batch_count,
+        ))
+      },
+      BatchSize::SmallInput,
+    );
+  });
 
   group.finish();
 }
