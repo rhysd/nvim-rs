@@ -2,7 +2,7 @@
 use std::{
   self,
   convert::TryInto,
-  io::{self, Cursor, ErrorKind, Read, Write},
+  io::{self, ErrorKind, Read, Write},
   sync::Arc,
 };
 
@@ -13,6 +13,8 @@ use futures::{
 use rmpv::{decode::read_value, encode::write_value, Value};
 
 use crate::error::{DecodeError, EncodeError};
+
+const DECODE_READ_BUFFER_SIZE: usize = 80 * 1024;
 
 /// A msgpack-rpc message, see
 /// <https://github.com/msgpack-rpc/msgpack-rpc/blob/master/spec.md>
@@ -43,47 +45,125 @@ macro_rules! rpc_args {
     }}
 }
 
+/// State reused while decoding msgpack-rpc messages from a stream.
+pub struct DecodeState {
+  rest: Vec<u8>,
+  read_buf: Option<Box<[u8; DECODE_READ_BUFFER_SIZE]>>,
+}
+
+impl Default for DecodeState {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl DecodeState {
+  #[must_use]
+  pub fn new() -> Self {
+    Self {
+      rest: Vec::new(),
+      read_buf: None,
+    }
+  }
+
+  #[must_use]
+  pub fn with_rest(rest: Vec<u8>) -> Self {
+    Self {
+      rest,
+      read_buf: None,
+    }
+  }
+
+  #[must_use]
+  pub fn into_rest(self) -> Vec<u8> {
+    self.rest
+  }
+
+  pub async fn decode<R>(
+    &mut self,
+    reader: &mut R,
+  ) -> std::result::Result<RpcMessage, Box<DecodeError>>
+  where
+    R: AsyncRead + Send + Unpin + 'static,
+  {
+    loop {
+      if let Some(msg) = try_decode_rest(&mut self.rest)? {
+        return Ok(msg);
+      }
+
+      debug!("Not enough data, reading more!");
+      let bytes_read = {
+        let read_buf = self
+          .read_buf
+          .get_or_insert_with(|| Box::new([0; DECODE_READ_BUFFER_SIZE]));
+        reader.read(&mut read_buf[..]).await
+      };
+
+      match bytes_read {
+        Ok(n) if n == 0 => {
+          return Err(io::Error::new(ErrorKind::UnexpectedEof, "EOF").into());
+        }
+        Ok(n) => {
+          let read_buf = self
+            .read_buf
+            .as_ref()
+            .expect("read buffer was initialized before reading");
+          self.rest.extend_from_slice(&read_buf[..n]);
+        }
+        Err(err) => return Err(err.into()),
+      }
+    }
+  }
+}
+
 /// Continously reads from reader, pushing onto `rest`. Then tries to decode the
 /// contents of `rest`. If it succeeds, returns the message, and leaves any
 /// non-decoded bytes in `rest`. If we did not read enough for a full message,
 /// read more. Return on all other errors.
-//
-// TODO: This might be inefficient. Can't we read into `rest` directly?
 pub async fn decode<R: AsyncRead + Send + Unpin + 'static>(
   reader: &mut R,
   rest: &mut Vec<u8>,
 ) -> std::result::Result<RpcMessage, Box<DecodeError>> {
-  let mut buf = Box::new([0_u8; 80 * 1024]);
-  let mut bytes_read;
+  let mut state = DecodeState::with_rest(std::mem::take(rest));
+  let result = state.decode(reader).await;
+  *rest = state.into_rest();
+  result
+}
 
-  loop {
-    let mut c = Cursor::new(&rest);
+fn try_decode_rest(
+  rest: &mut Vec<u8>,
+) -> std::result::Result<Option<RpcMessage>, Box<DecodeError>> {
+  let original_len = rest.len();
+  let mut input = rest.as_slice();
 
-    match decode_buffer(&mut c).map_err(|b| *b) {
-      Ok(msg) => {
-        let pos = c.position();
-        *rest = rest.split_off(pos as usize); // TODO: more efficiency
-        return Ok(msg);
-      }
-      Err(DecodeError::BufferError(e))
-        if e.kind() == ErrorKind::UnexpectedEof =>
-      {
-        debug!("Not enough data, reading more!");
-        bytes_read = reader.read(&mut *buf).await;
-      }
-      Err(err) => return Err(err.into()),
+  match decode_buffer(&mut input).map_err(|b| *b) {
+    Ok(msg) => {
+      let consumed = original_len - input.len();
+      discard_consumed(rest, consumed);
+      Ok(Some(msg))
     }
-
-    match bytes_read {
-      Ok(n) if n == 0 => {
-        return Err(io::Error::new(ErrorKind::UnexpectedEof, "EOF").into());
-      }
-      Ok(n) => {
-        rest.extend_from_slice(&buf[..n]);
-      }
-      Err(err) => return Err(err.into()),
+    Err(DecodeError::BufferError(e))
+      if e.kind() == ErrorKind::UnexpectedEof =>
+    {
+      Ok(None)
     }
+    Err(err) => Err(err.into()),
   }
+}
+
+fn discard_consumed(rest: &mut Vec<u8>, consumed: usize) {
+  if consumed == 0 {
+    return;
+  }
+
+  if consumed >= rest.len() {
+    rest.clear();
+    return;
+  }
+
+  let remaining = rest.len() - consumed;
+  rest.copy_within(consumed.., 0);
+  rest.truncate(remaining);
 }
 
 /// Syncronously decode the content of a reader into an rpc message. Tries to

@@ -3,7 +3,7 @@ use criterion::{
   Criterion, Throughput,
 };
 use futures::{executor::block_on, io::Cursor};
-use navy_nvim_rs::rpc::model::{decode, encode_sync, RpcMessage};
+use navy_nvim_rs::rpc::model::{encode_sync, DecodeState, RpcMessage};
 use rmpv::{decode::read_value, Value};
 use std::collections::HashSet;
 
@@ -67,25 +67,24 @@ fn repeated_messages(message: &[u8], count: usize) -> Vec<u8> {
 
 fn decode_one_from_reader(bytes: Vec<u8>) -> RpcMessage {
   let mut reader = Cursor::new(bytes);
-  let mut rest = Vec::new();
-  block_on(decode(&mut reader, &mut rest)).unwrap()
+  let mut decoder = DecodeState::new();
+  block_on(decoder.decode(&mut reader)).unwrap()
 }
 
 fn decode_one_from_rest(bytes: Vec<u8>) -> RpcMessage {
   let mut reader = Cursor::new(Vec::new());
-  let mut rest = bytes;
-  block_on(decode(&mut reader, &mut rest)).unwrap()
+  let mut decoder = DecodeState::with_rest(bytes);
+  block_on(decoder.decode(&mut reader)).unwrap()
 }
 
 fn decode_many_from_reader(bytes: Vec<u8>, count: usize) -> usize {
   let mut reader = Cursor::new(bytes);
-  let mut rest = Vec::new();
+  let mut decoder = DecodeState::new();
 
   for _ in 0..count {
-    let msg = block_on(decode(&mut reader, &mut rest)).unwrap();
+    let msg = block_on(decoder.decode(&mut reader)).unwrap();
     black_box(msg);
   }
-  black_box(rest.len());
   count
 }
 

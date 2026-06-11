@@ -351,10 +351,10 @@ where
   where
     R: AsyncRead + Send + Unpin + 'static,
   {
-    let mut rest: Vec<u8> = vec![];
+    let mut decoder = model::DecodeState::new();
 
     loop {
-      let msg = match model::decode(&mut reader, &mut rest).await {
+      let msg = match decoder.decode(&mut reader).await {
         Ok(msg) => msg,
         Err(err) => {
           let e = self.send_error_to_callers(&self.queue, *err).await?;
