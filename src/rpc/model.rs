@@ -48,6 +48,7 @@ macro_rules! rpc_args {
 /// State reused while decoding msgpack-rpc messages from a stream.
 pub struct DecodeState {
   rest: Vec<u8>,
+  start: usize,
   read_buf: Option<Box<[u8; DECODE_READ_BUFFER_SIZE]>>,
 }
 
@@ -62,6 +63,7 @@ impl DecodeState {
   pub fn new() -> Self {
     Self {
       rest: Vec::new(),
+      start: 0,
       read_buf: None,
     }
   }
@@ -70,12 +72,14 @@ impl DecodeState {
   pub fn with_rest(rest: Vec<u8>) -> Self {
     Self {
       rest,
+      start: 0,
       read_buf: None,
     }
   }
 
   #[must_use]
-  pub fn into_rest(self) -> Vec<u8> {
+  pub fn into_rest(mut self) -> Vec<u8> {
+    self.compact_rest();
     self.rest
   }
 
@@ -87,11 +91,14 @@ impl DecodeState {
     R: AsyncRead + Send + Unpin + 'static,
   {
     loop {
-      if let Some(msg) = try_decode_rest(&mut self.rest)? {
-        return Ok(msg);
+      if self.has_rest() {
+        if let Some(msg) = self.try_decode_rest()? {
+          return Ok(msg);
+        }
       }
 
       debug!("Not enough data, reading more!");
+      self.compact_rest();
       let bytes_read = {
         let read_buf = self
           .read_buf
@@ -114,6 +121,60 @@ impl DecodeState {
       }
     }
   }
+
+  fn has_rest(&self) -> bool {
+    self.start < self.rest.len()
+  }
+
+  fn try_decode_rest(
+    &mut self,
+  ) -> std::result::Result<Option<RpcMessage>, Box<DecodeError>> {
+    match try_decode_slice(&self.rest[self.start..])? {
+      Some((msg, consumed)) => {
+        self.start += consumed;
+        if self.start == self.rest.len() {
+          self.rest.clear();
+          self.start = 0;
+        }
+        Ok(Some(msg))
+      }
+      None => Ok(None),
+    }
+  }
+
+  fn compact_rest(&mut self) {
+    if self.start == 0 {
+      return;
+    }
+
+    if self.start >= self.rest.len() {
+      self.rest.clear();
+      self.start = 0;
+      return;
+    }
+
+    let remaining = self.rest.len() - self.start;
+    self.rest.copy_within(self.start.., 0);
+    self.rest.truncate(remaining);
+    self.start = 0;
+  }
+}
+
+fn try_decode_slice(
+  bytes: &[u8],
+) -> std::result::Result<Option<(RpcMessage, usize)>, Box<DecodeError>> {
+  let available_len = bytes.len();
+  let mut input = bytes;
+
+  match decode_buffer(&mut input).map_err(|b| *b) {
+    Ok(msg) => Ok(Some((msg, available_len - input.len()))),
+    Err(DecodeError::BufferError(e))
+      if e.kind() == ErrorKind::UnexpectedEof =>
+    {
+      Ok(None)
+    }
+    Err(err) => Err(err.into()),
+  }
 }
 
 /// Continously reads from reader, pushing onto `rest`. Then tries to decode the
@@ -128,42 +189,6 @@ pub async fn decode<R: AsyncRead + Send + Unpin + 'static>(
   let result = state.decode(reader).await;
   *rest = state.into_rest();
   result
-}
-
-fn try_decode_rest(
-  rest: &mut Vec<u8>,
-) -> std::result::Result<Option<RpcMessage>, Box<DecodeError>> {
-  let original_len = rest.len();
-  let mut input = rest.as_slice();
-
-  match decode_buffer(&mut input).map_err(|b| *b) {
-    Ok(msg) => {
-      let consumed = original_len - input.len();
-      discard_consumed(rest, consumed);
-      Ok(Some(msg))
-    }
-    Err(DecodeError::BufferError(e))
-      if e.kind() == ErrorKind::UnexpectedEof =>
-    {
-      Ok(None)
-    }
-    Err(err) => Err(err.into()),
-  }
-}
-
-fn discard_consumed(rest: &mut Vec<u8>, consumed: usize) {
-  if consumed == 0 {
-    return;
-  }
-
-  if consumed >= rest.len() {
-    rest.clear();
-    return;
-  }
-
-  let remaining = rest.len() - consumed;
-  rest.copy_within(consumed.., 0);
-  rest.truncate(remaining);
 }
 
 /// Syncronously decode the content of a reader into an rpc message. Tries to
@@ -351,6 +376,58 @@ impl IntoVal<Value> for Value {
 impl IntoVal<Value> for Vec<(Value, Value)> {
   fn into_val(self) -> Value {
     Value::from(self)
+  }
+}
+
+#[cfg(test)]
+mod decode_state_tests {
+  use super::*;
+  use futures::{executor::block_on, io::Cursor};
+
+  fn request(msgid: u64, method: &str) -> RpcMessage {
+    RpcMessage::RpcRequest {
+      msgid,
+      method: method.to_owned(),
+      params: vec![],
+    }
+  }
+
+  fn encoded(msg: RpcMessage) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    encode_sync(&mut bytes, msg).unwrap();
+    bytes
+  }
+
+  #[test]
+  fn decode_state_decodes_concatenated_messages() {
+    let msg_1 = request(1, "test_method");
+    let msg_2 = request(2, "test_method_2");
+
+    let mut bytes = encoded(msg_1.clone());
+    bytes.extend_from_slice(&encoded(msg_2.clone()));
+
+    let mut reader = Cursor::new(bytes);
+    let mut decoder = DecodeState::new();
+
+    assert_eq!(block_on(decoder.decode(&mut reader)).unwrap(), msg_1);
+    assert_eq!(block_on(decoder.decode(&mut reader)).unwrap(), msg_2);
+  }
+
+  #[test]
+  fn legacy_decode_returns_unconsumed_rest() {
+    let msg_1 = request(1, "test_method");
+    let msg_2 = request(2, "test_method_2");
+    let msg_2_bytes = encoded(msg_2.clone());
+
+    let mut rest = encoded(msg_1.clone());
+    rest.extend_from_slice(&msg_2_bytes);
+
+    let mut reader = Cursor::new(Vec::new());
+    assert_eq!(block_on(decode(&mut reader, &mut rest)).unwrap(), msg_1);
+    assert_eq!(rest, msg_2_bytes);
+
+    assert_eq!(block_on(decode(&mut reader, &mut rest)).unwrap(), msg_2);
+    assert!(rest.is_empty());
   }
 }
 

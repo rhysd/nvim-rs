@@ -3,7 +3,7 @@ use criterion::{
   Criterion, Throughput,
 };
 use futures::{executor::block_on, io::Cursor};
-use navy_nvim_rs::rpc::model::{encode_sync, DecodeState, RpcMessage};
+use navy_nvim_rs::rpc::model::{DecodeState, RpcMessage};
 use rmpv::{decode::read_value, Value};
 use std::collections::HashSet;
 
@@ -23,63 +23,20 @@ struct BenchInput {
   bytes: Vec<u8>,
 }
 
-fn encode_message(msg: RpcMessage) -> Vec<u8> {
-  let mut bytes = Vec::new();
-  encode_sync(&mut bytes, msg).unwrap();
-  bytes
-}
-
-fn small_request() -> RpcMessage {
-  RpcMessage::RpcRequest {
-    msgid: 1,
-    method: "nvim_get_current_buf".to_owned(),
-    params: vec![],
-  }
-}
-
-fn large_notification(line_count: usize) -> RpcMessage {
-  let lines = (0..line_count)
-    .map(|i| {
-      Value::from(format!("line {i}: abcdefghijklmnopqrstuvwxyz0123456789"))
-    })
-    .collect::<Vec<_>>();
-
-  RpcMessage::RpcNotification {
-    method: "nvim_buf_lines_event".to_owned(),
-    params: vec![
-      Value::from(1),
-      Value::from(0),
-      Value::from(0),
-      Value::from(line_count as i64),
-      Value::from(lines),
-      Value::from(false),
-    ],
-  }
-}
-
-fn repeated_messages(message: &[u8], count: usize) -> Vec<u8> {
-  let mut bytes = Vec::with_capacity(message.len() * count);
-  for _ in 0..count {
-    bytes.extend_from_slice(message);
-  }
-  bytes
-}
-
-fn decode_one_from_reader(bytes: Vec<u8>) -> RpcMessage {
+fn decode_one_from_reader_with_state(
+  decoder: &mut DecodeState,
+  bytes: Vec<u8>,
+) -> RpcMessage {
   let mut reader = Cursor::new(bytes);
-  let mut decoder = DecodeState::new();
   block_on(decoder.decode(&mut reader)).unwrap()
 }
 
-fn decode_one_from_rest(bytes: Vec<u8>) -> RpcMessage {
-  let mut reader = Cursor::new(Vec::new());
-  let mut decoder = DecodeState::with_rest(bytes);
-  block_on(decoder.decode(&mut reader)).unwrap()
-}
-
-fn decode_many_from_reader(bytes: Vec<u8>, count: usize) -> usize {
+fn decode_many_from_reader_with_state(
+  decoder: &mut DecodeState,
+  bytes: Vec<u8>,
+  count: usize,
+) -> usize {
   let mut reader = Cursor::new(bytes);
-  let mut decoder = DecodeState::new();
 
   for _ in 0..count {
     let msg = block_on(decoder.decode(&mut reader)).unwrap();
@@ -232,60 +189,25 @@ fn largest_unused_ui_input(
 }
 
 fn rpc_decode(c: &mut Criterion) {
-  let small = encode_message(small_request());
-  let large = encode_message(large_notification(128));
   let captured_ui = nvim_ui_fixture();
 
-  let batch_count = 256;
-  let small_batch = repeated_messages(&small, batch_count);
-
   let mut group = c.benchmark_group("rpc_decode");
-
-  group.throughput(Throughput::Bytes(small.len() as u64));
-  group.bench_function("single_small_from_reader", |b| {
-    b.iter_batched(
-      || small.clone(),
-      |bytes| black_box(decode_one_from_reader(bytes)),
-      BatchSize::SmallInput,
-    );
-  });
-
-  group.throughput(Throughput::Bytes(small.len() as u64));
-  group.bench_function("single_small_from_rest", |b| {
-    b.iter_batched(
-      || small.clone(),
-      |bytes| black_box(decode_one_from_rest(bytes)),
-      BatchSize::SmallInput,
-    );
-  });
-
-  group.throughput(Throughput::Bytes(large.len() as u64));
-  group.bench_function("single_large_from_reader", |b| {
-    b.iter_batched(
-      || large.clone(),
-      |bytes| black_box(decode_one_from_reader(bytes)),
-      BatchSize::SmallInput,
-    );
-  });
-
-  group.throughput(Throughput::Bytes(small_batch.len() as u64));
-  group.bench_function("small_batch_from_reader", |b| {
-    b.iter_batched(
-      || small_batch.clone(),
-      |bytes| black_box(decode_many_from_reader(bytes, batch_count)),
-      BatchSize::SmallInput,
-    );
-  });
 
   for input in selected_ui_inputs(&captured_ui) {
     group.throughput(Throughput::Bytes(input.bytes.len() as u64));
     group.bench_with_input(
-      BenchmarkId::new("single_from_actual_nvim", &input.name),
+      BenchmarkId::new(
+        "single_actual_nvim_ui_from_reader_reused_state",
+        &input.name,
+      ),
       &input.bytes,
       |b, bytes| {
+        let mut decoder = DecodeState::new();
         b.iter_batched(
           || bytes.clone(),
-          |bytes| black_box(decode_one_from_reader(bytes)),
+          |bytes| {
+            black_box(decode_one_from_reader_with_state(&mut decoder, bytes))
+          },
           BatchSize::SmallInput,
         );
       },
@@ -298,10 +220,17 @@ fn rpc_decode(c: &mut Criterion) {
     .flat_map(|msg| msg.bytes.iter().copied())
     .collect::<Vec<_>>();
   group.throughput(Throughput::Bytes(ui_batch.len() as u64));
-  group.bench_function("actual_nvim_ui_batch_from_reader", |b| {
+  group.bench_function("actual_nvim_ui_batch_from_reader_reused_state", |b| {
+    let mut decoder = DecodeState::new();
     b.iter_batched(
       || ui_batch.clone(),
-      |bytes| black_box(decode_many_from_reader(bytes, ui_batch_count)),
+      |bytes| {
+        black_box(decode_many_from_reader_with_state(
+          &mut decoder,
+          bytes,
+          ui_batch_count,
+        ))
+      },
       BatchSize::SmallInput,
     );
   });
