@@ -298,6 +298,37 @@ pub fn encode_sync<W: Write>(
   Ok(())
 }
 
+/// State reused while encoding msgpack-rpc messages to a stream.
+pub struct EncodeState<W> {
+  writer: W,
+  buffer: Vec<u8>,
+}
+
+impl<W> EncodeState<W> {
+  #[must_use]
+  pub fn new(writer: W) -> Self {
+    Self {
+      writer,
+      buffer: Vec::new(),
+    }
+  }
+
+  #[must_use]
+  pub fn into_inner(self) -> W {
+    self.writer
+  }
+
+  #[must_use]
+  pub fn get_ref(&self) -> &W {
+    &self.writer
+  }
+
+  #[must_use]
+  pub fn get_mut(&mut self) -> &mut W {
+    &mut self.writer
+  }
+}
+
 /// Encode the given message into the `BufWriter`. Flushes the writer when
 /// finished.
 pub async fn encode<W: AsyncWrite + Send + Unpin + 'static>(
@@ -309,6 +340,22 @@ pub async fn encode<W: AsyncWrite + Send + Unpin + 'static>(
 
   let mut writer = writer.lock().await;
   writer.write_all(&v).await?;
+  writer.flush().await?;
+
+  Ok(())
+}
+
+/// Encode the given message using a buffer reused with the writer.
+pub async fn encode_with_state<W: AsyncWrite + Send + Unpin + 'static>(
+  state: Arc<Mutex<EncodeState<W>>>,
+  msg: RpcMessage,
+) -> std::result::Result<(), Box<EncodeError>> {
+  let mut state = state.lock().await;
+  state.buffer.clear();
+  encode_sync(&mut state.buffer, msg)?;
+
+  let EncodeState { writer, buffer } = &mut *state;
+  writer.write_all(buffer).await?;
   writer.flush().await?;
 
   Ok(())
@@ -498,6 +545,44 @@ mod test {
     assert_eq!(16, cursor.position());
 
     let msg_dest_2 = decode_buffer(&mut cursor).unwrap();
+    assert_eq!(msg_2, msg_dest_2);
+  }
+
+  #[tokio::test]
+  async fn encode_with_state_reuses_buffer() {
+    let msg_1 = RpcMessage::RpcRequest {
+      msgid: 1,
+      method: "test_method".to_owned(),
+      params: vec![],
+    };
+
+    let msg_2 = RpcMessage::RpcRequest {
+      msgid: 2,
+      method: "test_method".to_owned(),
+      params: vec![],
+    };
+
+    let buff: Vec<u8> = vec![];
+    let state = Arc::new(Mutex::new(EncodeState::new(BufWriter::new(buff))));
+
+    encode_with_state(state.clone(), msg_1.clone())
+      .await
+      .unwrap();
+    let first_capacity = state.lock().await.buffer.capacity();
+    assert!(first_capacity > 0);
+
+    encode_with_state(state.clone(), msg_2.clone())
+      .await
+      .unwrap();
+    let mut state = state.lock().await;
+    assert_eq!(first_capacity, state.buffer.capacity());
+
+    let x = state.writer.get_mut();
+    let mut cursor = Cursor::new(x.as_slice());
+    let msg_dest_1 = decode_buffer(&mut cursor).unwrap();
+    let msg_dest_2 = decode_buffer(&mut cursor).unwrap();
+
+    assert_eq!(msg_1, msg_dest_1);
     assert_eq!(msg_2, msg_dest_2);
   }
 }

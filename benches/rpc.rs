@@ -7,7 +7,9 @@ use futures::{
   io::{sink, Cursor},
   lock::Mutex,
 };
-use navy_nvim_rs::rpc::model::{encode, DecodeState, RpcMessage};
+use navy_nvim_rs::rpc::model::{
+  encode_with_state, DecodeState, EncodeState, RpcMessage,
+};
 use rmpv::{decode::read_value, Value};
 use std::{collections::HashSet, sync::Arc};
 
@@ -212,10 +214,10 @@ fn bench_encode(c: &mut Criterion) {
   let mut group = c.benchmark_group("rpc/encode");
 
   group.bench_function("request", |b| {
-    let writer = Arc::new(Mutex::new(sink()));
+    let state = Arc::new(Mutex::new(EncodeState::new(sink())));
     b.iter_batched(
       || msg.clone(),
-      |msg| black_box(block_on(encode(writer.clone(), msg)).unwrap()),
+      |msg| black_box(block_on(encode_with_state(state.clone(), msg)).unwrap()),
       BatchSize::SmallInput,
     );
   });

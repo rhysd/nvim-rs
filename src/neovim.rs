@@ -55,7 +55,7 @@ pub struct Neovim<W>
 where
   W: AsyncWrite + Send + Unpin + 'static,
 {
-  pub(crate) writer: Arc<Mutex<W>>,
+  pub(crate) writer: Arc<Mutex<model::EncodeState<W>>>,
   pub(crate) queue: Queue,
   pub(crate) msgid_counter: Arc<AtomicU64>,
 }
@@ -101,7 +101,7 @@ where
     H: Handler<Writer = W> + Spawner,
   {
     let req = Neovim {
-      writer: Arc::new(Mutex::new(writer)),
+      writer: Arc::new(Mutex::new(model::EncodeState::new(writer))),
       msgid_counter: Arc::new(AtomicU64::new(0)),
       queue: Arc::new(Mutex::new(Vec::new())),
     };
@@ -141,7 +141,7 @@ where
     H: Handler<Writer = W> + Spawner,
   {
     let instance = Neovim {
-      writer: Arc::new(Mutex::new(writer)),
+      writer: Arc::new(Mutex::new(model::EncodeState::new(writer))),
       msgid_counter: Arc::new(AtomicU64::new(0)),
       queue: Arc::new(Mutex::new(Vec::new())),
     };
@@ -161,7 +161,7 @@ where
       method: "nvim_exec_lua".to_owned(),
       params: call_args![format!("return '{message}'"), Vec::<Value>::new()],
     };
-    model::encode(instance.writer.clone(), req).await?;
+    model::encode_with_state(instance.writer.clone(), req).await?;
 
     let expected_resp = RpcMessage::RpcResponse {
       msgid,
@@ -231,7 +231,7 @@ where
     self.queue.lock().await.push((msgid, sender));
 
     let writer = self.writer.clone();
-    model::encode(writer, req).await?;
+    model::encode_with_state(writer, req).await?;
 
     Ok(receiver)
   }
@@ -330,9 +330,11 @@ where
                 },
               };
 
-            model::encode(writer, response).await.unwrap_or_else(|e| {
-              error!("Error sending response to request {}: '{}'", msgid, e);
-            });
+            model::encode_with_state(writer, response)
+              .await
+              .unwrap_or_else(|e| {
+                error!("Error sending response to request {}: '{}'", msgid, e);
+              });
           });
         }
         RpcMessage::RpcNotification { method, params } => {
