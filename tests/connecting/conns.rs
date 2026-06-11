@@ -1,15 +1,15 @@
 #![allow(unused)]
-use nvim_rs::rpc::handler::Dummy as DummyHandler;
+use navy_nvim_rs::rpc::handler::Dummy as DummyHandler;
 
 #[cfg(feature = "use_tokio")]
-use nvim_rs::create::tokio as create;
+use navy_nvim_rs::create::tokio as create;
 #[cfg(feature = "use_tokio")]
 use tokio::test as atest;
 
 #[cfg(feature = "use_async-std")]
 use async_std::test as atest;
 #[cfg(feature = "use_async-std")]
-use nvim_rs::create::async_std as create;
+use navy_nvim_rs::create::async_std as create;
 
 use std::{
   path::Path,

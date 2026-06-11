@@ -5,7 +5,7 @@ use rmpv::Value;
 
 use futures::lock::Mutex;
 
-use nvim_rs::{create::async_std as create, Handler, Neovim};
+use navy_nvim_rs::{create::async_std as create, Handler, Neovim};
 
 use async_std::{self, fs::File as ASFile};
 

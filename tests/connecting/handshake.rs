@@ -1,7 +1,7 @@
-use nvim_rs::rpc::handler::Dummy as DummyHandler;
+use navy_nvim_rs::rpc::handler::Dummy as DummyHandler;
 
 #[cfg(feature = "use_tokio")]
-use nvim_rs::create::tokio as create;
+use navy_nvim_rs::create::tokio as create;
 #[cfg(feature = "use_tokio")]
 use tokio::process::Command;
 #[cfg(feature = "use_tokio")]
@@ -10,7 +10,7 @@ use tokio::test as atest;
 #[cfg(feature = "use_async-std")]
 use async_std::test as atest;
 #[cfg(feature = "use_async-std")]
-use nvim_rs::create::async_std as create;
+use navy_nvim_rs::create::async_std as create;
 #[cfg(feature = "use_async-std")]
 use std::process::Command;
 
@@ -18,7 +18,7 @@ use std::process::Command;
 mod common;
 use common::*;
 
-use nvim_rs::error::HandshakeError;
+use navy_nvim_rs::error::HandshakeError;
 
 #[atest]
 async fn successful_handshake() {

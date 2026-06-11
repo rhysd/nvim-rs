@@ -1,4 +1,4 @@
-use nvim_rs::{
+use navy_nvim_rs::{
   compat::tokio::Compat, create::tokio as create, neovim::Neovim, Handler,
 };
 

@@ -2,12 +2,11 @@
 //! functionality.
 use std::{env, error::Error, fs};
 
-
 use rmpv::Value;
 
 use tokio::fs::File as TokioFile;
 
-use nvim_rs::{
+use navy_nvim_rs::{
   compat::tokio::Compat, create::tokio as create, rpc::IntoVal, Handler, Neovim,
 };
 

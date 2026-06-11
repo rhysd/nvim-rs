@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use nvim_rs::{
+use navy_nvim_rs::{
   call_args,
   create::tokio as create,
   rpc::{handler::Dummy, IntoVal},
@@ -15,10 +15,7 @@ use common::nvim_path;
 fn simple_requests(c: &mut Criterion) {
   let handler = Dummy::new();
 
-  let rt = Builder::new_current_thread()
-    .enable_io()
-    .build()
-    .unwrap();
+  let rt = Builder::new_current_thread().enable_io().build().unwrap();
 
   let (nvim, _io_handler, _child) = rt
     .block_on(create::new_child_cmd(
@@ -44,10 +41,7 @@ fn simple_requests(c: &mut Criterion) {
 fn request_file(c: &mut Criterion) {
   let handler = Dummy::new();
 
-  let rt = Builder::new_current_thread()
-    .enable_io()
-    .build()
-    .unwrap();
+  let rt = Builder::new_current_thread().enable_io().build().unwrap();
 
   let (nvim, _io_handler, _child) = rt
     .block_on(create::new_child_cmd(

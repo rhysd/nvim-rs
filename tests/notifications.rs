@@ -1,25 +1,18 @@
-use std::{
-  sync::Arc,
-  time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use tokio::{
+  process::{ChildStdin, Command},
   sync::{
-    mpsc::{UnboundedSender, unbounded_channel},
+    mpsc::{unbounded_channel, UnboundedSender},
     Notify,
   },
-  process::{ChildStdin, Command},
   task::yield_now,
 };
 
 use futures::FutureExt;
 
-use nvim_rs::{
-  self,
-  create::tokio as create,
-  compat::tokio::Compat,
-  neovim::Neovim,
-  Value,
+use navy_nvim_rs::{
+  self, compat::tokio::Compat, create::tokio as create, neovim::Neovim, Value,
 };
 
 mod common;
@@ -33,7 +26,7 @@ macro_rules! timeout {
     tokio::time::timeout(TIMEOUT, $x).map(|res| {
       res.expect(&format!("Timed out waiting for {}", stringify!($x)))
     })
-  }
+  };
 }
 
 #[derive(Clone)]
@@ -82,13 +75,8 @@ async fn sequential_notifications() {
 
   // Startup nvim
   let (nvim, _io_handler, _child) = create::new_child_cmd(
-    Command::new(nvim_path()).args(&[
-      "-u",
-      "NONE",
-      "--embed",
-      "--headless",
-    ]),
-    handler
+    Command::new(nvim_path()).args(&["-u", "NONE", "--embed", "--headless"]),
+    handler,
   )
   .await
   .unwrap();
@@ -103,7 +91,9 @@ async fn sequential_notifications() {
    * the commands via -c on the command line so that we block the test until the
    * notifications are actually pending.
    */
-  timeout!(nvim.command(nvim_cmds.join("|").as_str())).await.unwrap();
+  timeout!(nvim.command(nvim_cmds.join("|").as_str()))
+    .await
+    .unwrap();
 
   /* Unblock notifications in the reverse order that they were sent, if
    * notifications are being handled sequentially then they should still be

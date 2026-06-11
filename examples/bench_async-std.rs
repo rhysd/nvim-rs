@@ -4,7 +4,7 @@ use rmpv::Value;
 
 use async_std::{self, fs::File as ASFile};
 
-use nvim_rs::{create::async_std as create, Handler, Neovim};
+use navy_nvim_rs::{create::async_std as create, Handler, Neovim};
 
 #[derive(Clone)]
 struct NeovimHandler {}

@@ -1,5 +1,7 @@
 //! Quitting. See src/examples/quitting.rs for documentation
-use nvim_rs::{create::tokio as create, rpc::handler::Dummy as DummyHandler};
+use navy_nvim_rs::{
+  create::tokio as create, rpc::handler::Dummy as DummyHandler,
+};
 
 use std::error::Error;
 

@@ -7,7 +7,7 @@
 //!
 //! ```
 //! use rmpv::Value;
-//! use nvim_rs::rpc::unpack::TryUnpack;
+//! use navy_nvim_rs::rpc::unpack::TryUnpack;
 //!
 //! let v = Value::from("hoodle");
 //! let s:String = v.try_unpack().unwrap();

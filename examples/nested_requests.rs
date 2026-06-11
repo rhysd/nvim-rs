@@ -1,29 +1,19 @@
-use nvim_rs::{
-  compat::tokio::Compat,
-  create::tokio as create,
-  neovim::Neovim,
-  Handler,
+use navy_nvim_rs::{
+  compat::tokio::Compat, create::tokio as create, neovim::Neovim, Handler,
 };
 
 use rmpv::Value;
 
-use std::{
-  sync::Arc,
-  path::Path,
-};
+use std::{path::Path, sync::Arc};
 
 use tokio::{
   self,
   process::{ChildStdin, Command},
+  spawn,
   sync::Mutex,
-  spawn
 };
 
-const NVIM_BIN: &str = if cfg!(windows) {
-  "nvim.exe"
-} else {
-  "nvim"
-};
+const NVIM_BIN: &str = if cfg!(windows) { "nvim.exe" } else { "nvim" };
 const NVIM_PATH: &str = if cfg!(windows) {
   "neovim/build/bin/nvim.exe"
 } else {

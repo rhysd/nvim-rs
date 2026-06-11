@@ -1,6 +1,6 @@
 //! How to handle cleanup logic with access to the handler's data. See
 //! src/examples/handler_drop.rs for documentation.
-use nvim_rs::{
+use navy_nvim_rs::{
   compat::tokio::Compat, create::tokio as create, Handler, Neovim, Value,
 };
 
@@ -77,7 +77,6 @@ async fn main() {
   )
   .await
   .unwrap();
-
 
   let curbuf = nvim.get_current_buf().await.unwrap();
   if !curbuf.attach(false, vec![]).await.unwrap() {

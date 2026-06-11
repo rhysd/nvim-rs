@@ -295,10 +295,9 @@ impl Display for CallError {
       }
       Self::NeovimError(ref i, ref s) => match i {
         Some(i) => write!(fmt, "Error processing request: {i} - '{s}')"),
-        None => write!(
-          fmt,
-          "Error processing request, unknown error format: '{s}'"
-        ),
+        None => {
+          write!(fmt, "Error processing request, unknown error format: '{s}'")
+        }
       },
       CallError::WrongValueType(ref val) => {
         write!(fmt, "Wrong value type: '{val}'")

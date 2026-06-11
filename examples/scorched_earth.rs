@@ -6,7 +6,7 @@ use rmpv::Value;
 use futures::lock::Mutex;
 use tokio::fs::File as TokioFile;
 
-use nvim_rs::{
+use navy_nvim_rs::{
   compat::tokio::Compat, create::tokio as create, Handler, Neovim,
 };
 
