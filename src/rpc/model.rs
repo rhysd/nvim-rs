@@ -10,6 +10,7 @@ use futures::{
   io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
   lock::Mutex,
 };
+use rmp::{decode::ValueReadError, Marker};
 use rmpv::{decode::read_value, encode::write_value, Value};
 
 use crate::error::{DecodeError, EncodeError};
@@ -86,7 +87,7 @@ impl DecodeState {
   pub async fn decode<R>(
     &mut self,
     reader: &mut R,
-  ) -> std::result::Result<RpcMessage, Box<DecodeError>>
+  ) -> Result<RpcMessage, Box<DecodeError>>
   where
     R: AsyncRead + Send + Unpin + 'static,
   {
@@ -128,7 +129,7 @@ impl DecodeState {
 
   fn try_decode_rest(
     &mut self,
-  ) -> std::result::Result<Option<RpcMessage>, Box<DecodeError>> {
+  ) -> Result<Option<RpcMessage>, Box<DecodeError>> {
     match try_decode_slice(&self.rest[self.start..])? {
       Some((msg, consumed)) => {
         self.start += consumed;
@@ -162,11 +163,11 @@ impl DecodeState {
 
 fn try_decode_slice(
   bytes: &[u8],
-) -> std::result::Result<Option<(RpcMessage, usize)>, Box<DecodeError>> {
+) -> Result<Option<(RpcMessage, usize)>, Box<DecodeError>> {
   let available_len = bytes.len();
   let mut input = bytes;
 
-  match decode_buffer(&mut input).map_err(|b| *b) {
+  match RpcMessage::decode(&mut input).map_err(|b| *b) {
     Ok(msg) => Ok(Some((msg, available_len - input.len()))),
     Err(DecodeError::BufferError(e))
       if e.kind() == ErrorKind::UnexpectedEof =>
@@ -184,94 +185,210 @@ fn try_decode_slice(
 pub async fn decode<R: AsyncRead + Send + Unpin + 'static>(
   reader: &mut R,
   rest: &mut Vec<u8>,
-) -> std::result::Result<RpcMessage, Box<DecodeError>> {
+) -> Result<RpcMessage, Box<DecodeError>> {
   let mut state = DecodeState::with_rest(std::mem::take(rest));
   let result = state.decode(reader).await;
   *rest = state.into_rest();
   result
 }
 
-/// Syncronously decode the content of a reader into an rpc message. Tries to
-/// give detailed errors if something went wrong.
-fn decode_buffer<R: Read>(
-  reader: &mut R,
-) -> std::result::Result<RpcMessage, Box<DecodeError>> {
-  use crate::error::InvalidMessage::*;
+struct OuterArrayReader<'a, R> {
+  reader: &'a mut R,
+  len: u64,
+  read: u64,
+}
 
-  let arr: Vec<Value> = read_value(reader)?.try_into().map_err(NotAnArray)?;
-
-  let mut arr = arr.into_iter();
-
-  let msgtyp: u64 = arr
-    .next()
-    .ok_or(WrongArrayLength(3..=4, 0))?
-    .try_into()
-    .map_err(InvalidType)?;
-
-  match msgtyp {
-    0 => {
-      let msgid: u64 = arr
-        .next()
-        .ok_or(WrongArrayLength(4..=4, 1))?
-        .try_into()
-        .map_err(InvalidMsgid)?;
-      let method = match arr.next() {
-        Some(Value::String(s)) if s.is_str() => {
-          s.into_str().expect("Can remove using #230 of rmpv")
-        }
-        Some(val) => return Err(InvalidRequestName(msgid, val).into()),
-        None => return Err(WrongArrayLength(4..=4, 2).into()),
-      };
-      let params: Vec<Value> = arr
-        .next()
-        .ok_or(WrongArrayLength(4..=4, 3))?
-        .try_into()
-        .map_err(|val| InvalidParams(val, method.clone()))?;
-
-      Ok(RpcMessage::RpcRequest {
-        msgid,
-        method,
-        params,
-      })
-    }
-    1 => {
-      let msgid: u64 = arr
-        .next()
-        .ok_or(WrongArrayLength(4..=4, 1))?
-        .try_into()
-        .map_err(InvalidMsgid)?;
-      let error = arr.next().ok_or(WrongArrayLength(4..=4, 2))?;
-      let result = arr.next().ok_or(WrongArrayLength(4..=4, 3))?;
-      Ok(RpcMessage::RpcResponse {
-        msgid,
-        error,
-        result,
-      })
-    }
-    2 => {
-      let method = match arr.next() {
-        Some(Value::String(s)) if s.is_str() => {
-          s.into_str().expect("Can remove using #230 of rmpv")
-        }
-        Some(val) => return Err(InvalidNotificationName(val).into()),
-        None => return Err(WrongArrayLength(3..=3, 1).into()),
-      };
-      let params: Vec<Value> = arr
-        .next()
-        .ok_or(WrongArrayLength(3..=3, 2))?
-        .try_into()
-        .map_err(|val| InvalidParams(val, method.clone()))?;
-      Ok(RpcMessage::RpcNotification { method, params })
-    }
-    t => Err(UnknownMessageType(t).into()),
+impl<'a, R: Read> OuterArrayReader<'a, R> {
+  #[inline]
+  fn new(reader: &'a mut R) -> Result<Self, Box<DecodeError>> {
+    let len = Self::read_len(reader)?;
+    Ok(Self {
+      reader,
+      len,
+      read: 0,
+    })
   }
+
+  #[inline]
+  fn len(&self) -> u64 {
+    self.len
+  }
+
+  #[inline]
+  fn require_len(&self, expected: u64) -> Result<(), Box<DecodeError>> {
+    use crate::error::InvalidMessage::*;
+
+    if self.len < expected {
+      return Err(WrongArrayLength(expected..=expected, self.len).into());
+    }
+
+    Ok(())
+  }
+
+  #[inline]
+  fn read_value(&mut self) -> Result<Value, Box<DecodeError>> {
+    let value = read_value(self.reader)?;
+    self.read += 1;
+    Ok(value)
+  }
+
+  #[inline]
+  fn read_params(
+    &mut self,
+    method: &str,
+  ) -> Result<Vec<Value>, Box<DecodeError>> {
+    use crate::error::InvalidMessage::*;
+
+    match self.read_value_array()? {
+      Ok(params) => Ok(params),
+      Err(value) => Err(InvalidParams(value, method.to_owned()).into()),
+    }
+  }
+
+  #[inline]
+  fn finish(mut self) -> Result<(), Box<DecodeError>> {
+    while self.read < self.len {
+      read_value(self.reader)?;
+      self.read += 1;
+    }
+
+    Ok(())
+  }
+
+  fn read_len(reader: &mut R) -> Result<u64, Box<DecodeError>> {
+    use crate::error::InvalidMessage::*;
+
+    match rmp::decode::read_array_len(reader) {
+      Ok(len) => Ok(u64::from(len)),
+      Err(ValueReadError::TypeMismatch(marker)) => {
+        Err(NotAnArray(read_value_from_marker(reader, marker)?).into())
+      }
+      Err(err) => Err(rmpv::decode::Error::from(err).into()),
+    }
+  }
+
+  fn read_value_array(
+    &mut self,
+  ) -> Result<Result<Vec<Value>, Value>, Box<DecodeError>> {
+    let mut len = match rmp::decode::read_array_len(self.reader) {
+      Ok(len) => len,
+      Err(ValueReadError::TypeMismatch(marker)) => {
+        let value = read_value_from_marker(self.reader, marker)?;
+        self.read += 1;
+        return Ok(Err(value));
+      }
+      Err(err) => return Err(rmpv::decode::Error::from(err).into()),
+    };
+
+    let mut values = Vec::with_capacity(len as usize);
+    while len > 0 {
+      values.push(read_value(self.reader)?);
+      len -= 1;
+    }
+
+    self.read += 1;
+    Ok(Ok(values))
+  }
+}
+
+impl RpcMessage {
+  /// Syncronously decode the content of a reader into an rpc message. Tries to
+  /// give detailed errors if something went wrong.
+  fn decode<R: Read>(reader: &mut R) -> Result<Self, Box<DecodeError>> {
+    use crate::error::InvalidMessage::*;
+
+    let mut fields = OuterArrayReader::new(reader)?;
+    if fields.len() == 0 {
+      return Err(WrongArrayLength(3..=4, fields.len()).into());
+    }
+
+    let msgtyp: u64 = fields.read_value()?.try_into().map_err(InvalidType)?;
+
+    match msgtyp {
+      0 => Self::decode_request(fields),
+      1 => Self::decode_response(fields),
+      2 => Self::decode_notification(fields),
+      t => Err(UnknownMessageType(t).into()),
+    }
+  }
+
+  fn decode_request<R: Read>(
+    mut fields: OuterArrayReader<'_, R>,
+  ) -> Result<Self, Box<DecodeError>> {
+    use crate::error::InvalidMessage::*;
+
+    fields.require_len(4)?;
+
+    let msgid: u64 = fields.read_value()?.try_into().map_err(InvalidMsgid)?;
+    let method = match fields.read_value()? {
+      Value::String(s) if s.is_str() => {
+        s.into_str().expect("Can remove using #230 of rmpv")
+      }
+      val => return Err(InvalidRequestName(msgid, val).into()),
+    };
+    let params = fields.read_params(&method)?;
+    fields.finish()?;
+
+    Ok(Self::RpcRequest {
+      msgid,
+      method,
+      params,
+    })
+  }
+
+  fn decode_response<R: Read>(
+    mut fields: OuterArrayReader<'_, R>,
+  ) -> Result<Self, Box<DecodeError>> {
+    use crate::error::InvalidMessage::*;
+
+    fields.require_len(4)?;
+
+    let msgid: u64 = fields.read_value()?.try_into().map_err(InvalidMsgid)?;
+    let error = fields.read_value()?;
+    let result = fields.read_value()?;
+    fields.finish()?;
+
+    Ok(Self::RpcResponse {
+      msgid,
+      error,
+      result,
+    })
+  }
+
+  fn decode_notification<R: Read>(
+    mut fields: OuterArrayReader<'_, R>,
+  ) -> Result<Self, Box<DecodeError>> {
+    use crate::error::InvalidMessage::*;
+
+    fields.require_len(3)?;
+
+    let method = match fields.read_value()? {
+      Value::String(s) if s.is_str() => {
+        s.into_str().expect("Can remove using #230 of rmpv")
+      }
+      val => return Err(InvalidNotificationName(val).into()),
+    };
+    let params = fields.read_params(&method)?;
+    fields.finish()?;
+
+    Ok(Self::RpcNotification { method, params })
+  }
+}
+
+fn read_value_from_marker<R: Read>(
+  reader: &mut R,
+  marker: Marker,
+) -> Result<Value, Box<DecodeError>> {
+  let marker = [marker.to_u8()];
+  let mut value_reader = io::Cursor::new(marker).chain(reader);
+  read_value(&mut value_reader).map_err(Into::into)
 }
 
 /// Encode the given message into the `writer`.
 pub fn encode_sync<W: Write>(
   writer: &mut W,
   msg: RpcMessage,
-) -> std::result::Result<(), Box<EncodeError>> {
+) -> Result<(), Box<EncodeError>> {
   match msg {
     RpcMessage::RpcRequest {
       msgid,
@@ -334,7 +451,7 @@ impl<W> EncodeState<W> {
 pub async fn encode<W: AsyncWrite + Send + Unpin + 'static>(
   writer: Arc<Mutex<W>>,
   msg: RpcMessage,
-) -> std::result::Result<(), Box<EncodeError>> {
+) -> Result<(), Box<EncodeError>> {
   let mut v: Vec<u8> = vec![];
   encode_sync(&mut v, msg)?;
 
@@ -349,7 +466,7 @@ pub async fn encode<W: AsyncWrite + Send + Unpin + 'static>(
 pub async fn encode_with_state<W: AsyncWrite + Send + Unpin + 'static>(
   state: Arc<Mutex<EncodeState<W>>>,
   msg: RpcMessage,
-) -> std::result::Result<(), Box<EncodeError>> {
+) -> Result<(), Box<EncodeError>> {
   let mut state = state.lock().await;
   state.buffer.clear();
   encode_sync(&mut state.buffer, msg)?;
@@ -445,6 +562,84 @@ mod decode_state_tests {
     bytes
   }
 
+  fn encoded_value(value: Value) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    write_value(&mut bytes, &value).unwrap();
+    bytes
+  }
+
+  #[test]
+  fn outer_array_reader_reads_fields_and_skips_extras() {
+    let mut bytes = encoded_value(Value::from(vec![
+      Value::from(1),
+      Value::from(vec![Value::from(2), Value::from(3)]),
+      Value::from("extra"),
+    ]));
+    bytes.extend_from_slice(&encoded_value(Value::from("tail")));
+
+    let mut input = bytes.as_slice();
+    let mut fields = OuterArrayReader::new(&mut input).unwrap();
+
+    assert_eq!(fields.len(), 3);
+    assert_eq!(fields.read, 0);
+    assert_eq!(fields.read_value().unwrap(), Value::from(1));
+    assert_eq!(fields.read, 1);
+    assert_eq!(
+      fields.read_value_array().unwrap().unwrap(),
+      vec![Value::from(2), Value::from(3)]
+    );
+    assert_eq!(fields.read, 2);
+
+    fields.finish().unwrap();
+    assert_eq!(read_value(&mut input).unwrap(), Value::from("tail"));
+    assert!(input.is_empty());
+  }
+
+  #[test]
+  fn outer_array_reader_reports_non_array_params_as_value() {
+    let bytes = encoded_value(Value::from(vec![
+      Value::from(2),
+      Value::from("not-array"),
+      Value::from("extra"),
+    ]));
+    let mut input = bytes.as_slice();
+    let mut fields = OuterArrayReader::new(&mut input).unwrap();
+
+    assert_eq!(fields.read_value().unwrap(), Value::from(2));
+    let err = fields.read_params("redraw").unwrap_err();
+    match *err {
+      DecodeError::InvalidMessage(
+        crate::error::InvalidMessage::InvalidParams(value, method),
+      ) => {
+        assert_eq!(value, Value::from("not-array"));
+        assert_eq!(method, "redraw");
+      }
+      err => panic!("unexpected error: {err:?}"),
+    }
+    assert_eq!(fields.read, 2);
+
+    fields.finish().unwrap();
+    assert!(input.is_empty());
+  }
+
+  #[test]
+  fn rpc_message_decode_ignores_extra_outer_array_items() {
+    let msg = Value::from(vec![
+      Value::from(0),
+      Value::from(1),
+      Value::from("test_method"),
+      Value::from(Vec::<Value>::new()),
+      Value::from("extra"),
+    ]);
+    let mut bytes = Vec::new();
+    write_value(&mut bytes, &msg).unwrap();
+
+    assert_eq!(
+      RpcMessage::decode(&mut bytes.as_slice()).unwrap(),
+      request(1, "test_method")
+    );
+  }
+
   #[test]
   fn decode_state_decodes_concatenated_messages() {
     let msg_1 = request(1, "test_method");
@@ -504,7 +699,7 @@ mod test {
     let msg_dest = {
       let v = &mut *tmp.lock().await;
       let x = v.get_mut();
-      decode_buffer(&mut x.as_slice()).unwrap()
+      RpcMessage::decode(&mut x.as_slice()).unwrap()
     };
 
     assert_eq!(msg, msg_dest);
@@ -539,12 +734,12 @@ mod test {
     let v = &mut *tmp.lock().await;
     let x = v.get_mut();
     let mut cursor = Cursor::new(x.as_slice());
-    let msg_dest_1 = decode_buffer(&mut cursor).unwrap();
+    let msg_dest_1 = RpcMessage::decode(&mut cursor).unwrap();
 
     assert_eq!(msg_1, msg_dest_1);
     assert_eq!(16, cursor.position());
 
-    let msg_dest_2 = decode_buffer(&mut cursor).unwrap();
+    let msg_dest_2 = RpcMessage::decode(&mut cursor).unwrap();
     assert_eq!(msg_2, msg_dest_2);
   }
 
@@ -579,8 +774,8 @@ mod test {
 
     let x = state.writer.get_mut();
     let mut cursor = Cursor::new(x.as_slice());
-    let msg_dest_1 = decode_buffer(&mut cursor).unwrap();
-    let msg_dest_2 = decode_buffer(&mut cursor).unwrap();
+    let msg_dest_1 = RpcMessage::decode(&mut cursor).unwrap();
+    let msg_dest_2 = RpcMessage::decode(&mut cursor).unwrap();
 
     assert_eq!(msg_1, msg_dest_1);
     assert_eq!(msg_2, msg_dest_2);
