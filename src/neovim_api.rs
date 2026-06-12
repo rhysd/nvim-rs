@@ -1487,14 +1487,6 @@ where
       .map_err(|v| Box::new(CallError::WrongValueType(v)))
   }
 
-  pub async fn input(&self, keys: &str) -> Result<i64, Box<CallError>> {
-    self
-      .call("nvim_input", call_args![keys])
-      .await??
-      .try_unpack()
-      .map_err(|v| Box::new(CallError::WrongValueType(v)))
-  }
-
   pub async fn input_mouse(
     &self,
     button: &str,

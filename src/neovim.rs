@@ -236,6 +236,21 @@ where
     Ok(receiver)
   }
 
+  async fn send_nvim_input(
+    &self,
+    keys: &str,
+  ) -> Result<oneshot::Receiver<ResponseResult>, Box<EncodeError>> {
+    let msgid = self.msgid_counter.fetch_add(1, Ordering::Relaxed);
+    let (sender, receiver) = oneshot::channel();
+
+    self.queue.lock().await.push((msgid, sender));
+
+    let writer = self.writer.clone();
+    model::encode_nvim_input_with_state(writer, msgid, keys).await?;
+
+    Ok(receiver)
+  }
+
   pub async fn call(
     &self,
     method: &str,
@@ -246,21 +261,21 @@ where
       .await
       .map_err(|e| CallError::SendError(*e, method.to_string()))?;
 
-    match receiver.await {
-      // Result<Result<Result<Value, Value>, Arc<DecodeError>>, RecvError>
-      Ok(Ok(r)) => Ok(r), // r is Result<Value, Value>, i.e. we got an answer
-      Ok(Err(err)) => {
-        // err is a Decode Error, i.e. the answer wasn't decodable
-        Err(Box::new(CallError::DecodeError(err, method.to_string())))
-      }
-      Err(err) => {
-        // err is RecvError
-        Err(Box::new(CallError::InternalReceiveError(
-          err,
-          method.to_string(),
-        )))
-      }
-    }
+    receive_response(receiver, method).await
+  }
+
+  pub(crate) async fn call_nvim_input(
+    &self,
+    keys: &str,
+  ) -> Result<Result<Value, Value>, Box<CallError>> {
+    const METHOD: &str = "nvim_input";
+
+    let receiver = self
+      .send_nvim_input(keys)
+      .await
+      .map_err(|e| CallError::SendError(*e, METHOD.to_owned()))?;
+
+    receive_response(receiver, METHOD).await
   }
 
   async fn send_error_to_callers(
@@ -412,6 +427,27 @@ where
   /// saving anything.
   pub async fn quit_no_save(&self) -> Result<(), Box<CallError>> {
     self.command("qa!").await
+  }
+}
+
+async fn receive_response(
+  receiver: oneshot::Receiver<ResponseResult>,
+  method: &str,
+) -> Result<Result<Value, Value>, Box<CallError>> {
+  match receiver.await {
+    // Result<Result<Result<Value, Value>, Arc<DecodeError>>, RecvError>
+    Ok(Ok(r)) => Ok(r), // r is Result<Value, Value>, i.e. we got an answer
+    Ok(Err(err)) => {
+      // err is a Decode Error, i.e. the answer wasn't decodable
+      Err(Box::new(CallError::DecodeError(err, method.to_string())))
+    }
+    Err(err) => {
+      // err is RecvError
+      Err(Box::new(CallError::InternalReceiveError(
+        err,
+        method.to_string(),
+      )))
+    }
   }
 }
 

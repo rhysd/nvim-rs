@@ -3,8 +3,10 @@ use futures::io::AsyncWrite;
 use rmpv::Value;
 
 use crate::{
-  Buffer, Tabpage, Window, error::CallError, neovim::Neovim,
-  rpc::model::IntoVal,
+  Buffer, Tabpage, Window,
+  error::CallError,
+  neovim::Neovim,
+  rpc::{model::IntoVal, unpack::TryUnpack},
 };
 
 impl<W> Neovim<W>
@@ -101,5 +103,13 @@ where
         .await?
         .map(|val| Tabpage::new(val, self.clone()))?,
     )
+  }
+
+  pub async fn input(&self, keys: &str) -> Result<i64, Box<CallError>> {
+    self
+      .call_nvim_input(keys)
+      .await??
+      .try_unpack()
+      .map_err(|v| Box::new(CallError::WrongValueType(v)))
   }
 }

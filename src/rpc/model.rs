@@ -430,6 +430,22 @@ pub fn encode_sync<W: Write>(
   Ok(())
 }
 
+/// Encode an `nvim_input` request without building an owned [`RpcMessage`].
+pub fn encode_nvim_input_sync<W: Write>(
+  writer: &mut W,
+  msgid: u64,
+  keys: &str,
+) -> Result<(), Box<EncodeError>> {
+  write_array_len(writer, 4)?;
+  write_uint(writer, 0)?;
+  write_uint(writer, msgid)?;
+  write_str(writer, "nvim_input")?;
+  write_array_len(writer, 1)?;
+  write_str(writer, keys)?;
+
+  Ok(())
+}
+
 /// State reused while encoding msgpack-rpc messages to a stream.
 pub struct EncodeState<W> {
   writer: W,
@@ -485,6 +501,25 @@ pub async fn encode_with_state<W: AsyncWrite + Send + Unpin + 'static>(
   let mut state = state.lock().await;
   state.buffer.clear();
   encode_sync(&mut state.buffer, msg)?;
+
+  let EncodeState { writer, buffer } = &mut *state;
+  writer.write_all(buffer).await?;
+  writer.flush().await?;
+
+  Ok(())
+}
+
+/// Encode an `nvim_input` request using a buffer reused with the writer.
+pub async fn encode_nvim_input_with_state<
+  W: AsyncWrite + Send + Unpin + 'static,
+>(
+  state: Arc<Mutex<EncodeState<W>>>,
+  msgid: u64,
+  keys: &str,
+) -> Result<(), Box<EncodeError>> {
+  let mut state = state.lock().await;
+  state.buffer.clear();
+  encode_nvim_input_sync(&mut state.buffer, msgid, keys)?;
 
   let EncodeState { writer, buffer } = &mut *state;
   writer.write_all(buffer).await?;
@@ -627,6 +662,20 @@ mod decode_state_tests {
         Value::from(vec![Value::from(vec![Value::from("flush")])]),
       ]))
     );
+  }
+
+  #[test]
+  fn encode_nvim_input_sync_matches_rpc_message_encoding() {
+    let mut direct = Vec::new();
+    encode_nvim_input_sync(&mut direct, 7, "<C-D>").unwrap();
+
+    let via_message = encoded(RpcMessage::RpcRequest {
+      msgid: 7,
+      method: "nvim_input".to_owned(),
+      params: vec![Value::from("<C-D>")],
+    });
+
+    assert_eq!(direct, via_message);
   }
 
   #[test]

@@ -8,7 +8,8 @@ use futures::{
   lock::Mutex,
 };
 use navy_nvim_rs::rpc::model::{
-  DecodeState, EncodeState, RpcMessage, encode_with_state,
+  DecodeState, EncodeState, RpcMessage, encode_nvim_input_with_state,
+  encode_with_state,
 };
 use rmpv::{Value, decode::read_value};
 use std::{collections::HashSet, hint::black_box, sync::Arc};
@@ -41,14 +42,6 @@ fn encode_request_message() -> RpcMessage {
       Value::from(-1),
       Value::from(false),
     ],
-  }
-}
-
-fn encode_input_message(keys: &str) -> RpcMessage {
-  RpcMessage::RpcRequest {
-    msgid: 1,
-    method: "nvim_input".to_owned(),
-    params: vec![Value::from(keys)],
   }
 }
 
@@ -219,7 +212,6 @@ fn largest_unused_ui_input(
 
 fn bench_encode(c: &mut Criterion) {
   let request_msg = encode_request_message();
-  let input_msg = encode_input_message("<C-D>");
   let mut group = c.benchmark_group("rpc/encode");
 
   group.bench_function("request", |b| {
@@ -233,11 +225,16 @@ fn bench_encode(c: &mut Criterion) {
 
   group.bench_function("nvim_input_ctrl_d", |b| {
     let state = Arc::new(Mutex::new(EncodeState::new(sink())));
-    b.iter_batched(
-      || input_msg.clone(),
-      |msg| black_box(block_on(encode_with_state(state.clone(), msg)).unwrap()),
-      BatchSize::SmallInput,
-    );
+    b.iter(|| {
+      black_box(
+        block_on(encode_nvim_input_with_state(
+          state.clone(),
+          1,
+          black_box("<C-D>"),
+        ))
+        .unwrap(),
+      )
+    });
   });
 
   group.finish();
