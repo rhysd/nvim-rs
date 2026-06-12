@@ -35,7 +35,7 @@ struct Handler {
   notifiers: Arc<Vec<Notify>>,
 }
 
-impl nvim_rs::Handler for Handler {
+impl navy_nvim_rs::Handler for Handler {
   type Writer = Compat<ChildStdin>;
 
   async fn handle_notify(
