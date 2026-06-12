@@ -16,7 +16,163 @@ use rmpv::{Value, decode::read_value};
 
 use crate::error::DecodeError;
 
-pub type DecodeResult<T> = Result<T, Box<DecodeError>>;
+pub type RedrawDecodeResult<T> = Result<T, RedrawDecodeError>;
+
+#[derive(Debug)]
+pub enum RedrawDecodeError {
+  Incomplete,
+  Invalid(String),
+}
+
+impl RedrawDecodeError {
+  fn new(err: impl Debug) -> Self {
+    Self::Invalid(format!("unexpected msgpack payload {err:?}"))
+  }
+}
+
+impl From<RedrawDecodeError> for DecodeError {
+  fn from(value: RedrawDecodeError) -> Self {
+    match value {
+      RedrawDecodeError::Incomplete => Self::ReaderError(io::Error::new(
+        ErrorKind::UnexpectedEof,
+        "incomplete msgpack payload",
+      )),
+      RedrawDecodeError::Invalid(message) => {
+        Self::ReaderError(io::Error::new(ErrorKind::InvalidData, message))
+      }
+    }
+  }
+}
+
+impl From<io::Error> for RedrawDecodeError {
+  fn from(err: io::Error) -> Self {
+    if err.kind() == ErrorKind::UnexpectedEof {
+      Self::Incomplete
+    } else {
+      Self::new(err)
+    }
+  }
+}
+
+impl From<BytesReadError> for RedrawDecodeError {
+  fn from(err: BytesReadError) -> Self {
+    match err {
+      BytesReadError::InsufficientBytes { .. } => Self::Incomplete,
+      err => Self::new(err),
+    }
+  }
+}
+
+impl From<decode::MarkerReadError<BytesReadError>> for RedrawDecodeError {
+  fn from(err: decode::MarkerReadError<BytesReadError>) -> Self {
+    err.0.into()
+  }
+}
+
+impl From<ValueReadError<BytesReadError>> for RedrawDecodeError {
+  fn from(err: ValueReadError<BytesReadError>) -> Self {
+    match err {
+      ValueReadError::InvalidMarkerRead(err)
+      | ValueReadError::InvalidDataRead(err) => err.into(),
+      err => Self::new(err),
+    }
+  }
+}
+
+impl From<ValueReadError<io::Error>> for RedrawDecodeError {
+  fn from(err: ValueReadError<io::Error>) -> Self {
+    match err {
+      ValueReadError::InvalidMarkerRead(err)
+      | ValueReadError::InvalidDataRead(err) => err.into(),
+      err => Self::new(err),
+    }
+  }
+}
+
+impl From<NumValueReadError<BytesReadError>> for RedrawDecodeError {
+  fn from(err: NumValueReadError<BytesReadError>) -> Self {
+    match err {
+      NumValueReadError::InvalidMarkerRead(err)
+      | NumValueReadError::InvalidDataRead(err) => err.into(),
+      err => Self::new(err),
+    }
+  }
+}
+
+impl From<DecodeStringError<'_, BytesReadError>> for RedrawDecodeError {
+  fn from(err: DecodeStringError<'_, BytesReadError>) -> Self {
+    match err {
+      DecodeStringError::InvalidMarkerRead(err)
+      | DecodeStringError::InvalidDataRead(err) => err.into(),
+      DecodeStringError::BufferSizeTooSmall(_) => Self::Incomplete,
+      err => Self::new(err),
+    }
+  }
+}
+
+impl From<rmpv::decode::Error> for RedrawDecodeError {
+  fn from(err: rmpv::decode::Error) -> Self {
+    Self::new(err)
+  }
+}
+
+/// A complete borrowed `redraw` notification frame.
+pub struct RedrawFrame<'de> {
+  notification: RedrawNotification<'de>,
+  consumed: usize,
+}
+
+impl<'de> RedrawFrame<'de> {
+  /// Try to read a complete msgpack-rpc `redraw` notification frame.
+  ///
+  /// `Ok(None)` means either the next frame is not a `redraw` notification or
+  /// the frame is not complete yet.
+  pub fn try_read(bytes: &'de [u8]) -> Result<Option<Self>, RedrawDecodeError> {
+    if !is_redraw_method(bytes)? {
+      return Ok(None);
+    }
+
+    match Self::read(bytes) {
+      Ok(frame) => Ok(Some(frame)),
+      Err(RedrawDecodeError::Incomplete) => Ok(None),
+      Err(err) => Err(err),
+    }
+  }
+
+  fn read(bytes: &'de [u8]) -> Result<Self, RedrawDecodeError> {
+    let mut reader = MsgpackReader::new(bytes);
+    let outer_len = reader.read_array_len()?;
+
+    // `is_redraw_method` already verified these fields. Read them again so this
+    // function can build a borrowed params reader from the same cursor.
+    let _msg_type = reader.read_u64()?;
+    let _method = reader.read_str()?;
+
+    let params = reader.read_array_reader()?;
+    let mut params_for_skip = params.clone();
+    params_for_skip.skip_remaining()?;
+    reader.position = params_for_skip.reader.position;
+
+    for _ in 3..outer_len {
+      reader.skip_value()?;
+    }
+
+    Ok(Self {
+      notification: RedrawNotification::new(params),
+      consumed: reader.position,
+    })
+  }
+
+  pub fn consumed(&self) -> usize {
+    self.consumed
+  }
+}
+
+impl<'de> From<RedrawFrame<'de>> for RedrawNotification<'de> {
+  fn from(frame: RedrawFrame<'de>) -> Self {
+    frame.notification
+  }
+}
 
 /// A single msgpack value borrowed from the input buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,46 +192,39 @@ impl<'de> RawMsgpack<'de> {
 /// This is intentionally narrow: the future fast path only needs to decide
 /// whether the next local Neovim message should use the redraw reader.
 ///
-/// `Ok(None)` means the buffer is incomplete before the method and params
-/// array header can be checked.
-pub fn is_redraw_method(bytes: &[u8]) -> DecodeResult<Option<bool>> {
+/// `RedrawDecodeError::Incomplete` means the buffer is incomplete before the
+/// method and params array header can be checked.
+fn is_redraw_method(bytes: &[u8]) -> RedrawDecodeResult<bool> {
   let mut reader = MsgpackReader::new(bytes);
   let outer_len = match reader.read_rmp(decode::read_array_len) {
     Ok(len) => len,
-    Err(ValueReadError::TypeMismatch(_)) => return Ok(Some(false)),
-    Err(err) if value_read_error_is_incomplete(&err) => return Ok(None),
-    Err(err) => return Err(unexpected_payload(err)),
+    Err(ValueReadError::TypeMismatch(_)) => return Ok(false),
+    Err(err) => return Err(err.into()),
   };
 
   if outer_len < 3 {
-    return Ok(Some(false));
+    return Ok(false);
   }
 
-  let msg_type =
-    match reader.read_rmp(|reader| decode::read_int::<u64, _>(reader)) {
-      Ok(msg_type) => msg_type,
-      Err(NumValueReadError::TypeMismatch(_))
-      | Err(NumValueReadError::OutOfRange) => return Ok(Some(false)),
-      Err(err) if num_value_read_error_is_incomplete(&err) => return Ok(None),
-      Err(err) => return Err(unexpected_payload(err)),
-    };
+  let msg_type = match reader.read_rmp(decode::read_int::<u64, _>) {
+    Ok(msg_type) => msg_type,
+    Err(NumValueReadError::TypeMismatch(_))
+    | Err(NumValueReadError::OutOfRange) => return Ok(false),
+    Err(err) => return Err(err.into()),
+  };
 
   if msg_type != 2 {
-    return Ok(Some(false));
+    return Ok(false);
   }
 
-  if !match reader.read_str_eq("redraw")? {
-    Some(value) => value,
-    None => return Ok(None),
-  } {
-    return Ok(Some(false));
+  if !reader.read_str_eq("redraw")? {
+    return Ok(false);
   }
 
   match reader.read_rmp(decode::read_array_len) {
-    Ok(_) => Ok(Some(true)),
-    Err(ValueReadError::TypeMismatch(_)) => Ok(Some(false)),
-    Err(err) if value_read_error_is_incomplete(&err) => Ok(None),
-    Err(err) => Err(unexpected_payload(err)),
+    Ok(_) => Ok(true),
+    Err(ValueReadError::TypeMismatch(_)) => Ok(false),
+    Err(err) => Err(err.into()),
   }
 }
 
@@ -96,9 +245,9 @@ impl<'de> RedrawNotification<'de> {
     self.params.remaining()
   }
 
-  pub fn for_each_batch<F>(&mut self, mut f: F) -> DecodeResult<()>
+  pub fn for_each_batch<F>(&mut self, mut f: F) -> RedrawDecodeResult<()>
   where
-    F: FnMut(&mut RedrawBatch<'de>) -> DecodeResult<()>,
+    F: FnMut(&mut RedrawBatch<'de>) -> RedrawDecodeResult<()>,
   {
     while !self.params.is_empty() {
       self.params.ensure_remaining()?;
@@ -142,9 +291,9 @@ impl<'de> RedrawBatch<'de> {
     self.args.is_empty()
   }
 
-  pub fn for_each_args<F>(&mut self, mut f: F) -> DecodeResult<()>
+  pub fn for_each_args<F>(&mut self, mut f: F) -> RedrawDecodeResult<()>
   where
-    F: FnMut(&mut ArrayReader<'de>) -> DecodeResult<()>,
+    F: FnMut(&mut ArrayReader<'de>) -> RedrawDecodeResult<()>,
   {
     while !self.args.is_empty() {
       self.args.read_array(|args| f(args))?;
@@ -153,9 +302,9 @@ impl<'de> RedrawBatch<'de> {
     Ok(())
   }
 
-  pub fn for_each_payload<F>(&mut self, mut f: F) -> DecodeResult<()>
+  pub fn for_each_payload<F>(&mut self, mut f: F) -> RedrawDecodeResult<()>
   where
-    F: FnMut(RawMsgpack<'de>) -> DecodeResult<()>,
+    F: FnMut(RawMsgpack<'de>) -> RedrawDecodeResult<()>,
   {
     while !self.args.is_empty() {
       f(self.args.read_raw_value()?)?;
@@ -164,7 +313,7 @@ impl<'de> RedrawBatch<'de> {
     Ok(())
   }
 
-  pub fn skip_remaining(&mut self) -> DecodeResult<()> {
+  pub fn skip_remaining(&mut self) -> RedrawDecodeResult<()> {
     self.args.skip_remaining()
   }
 }
@@ -187,28 +336,28 @@ impl<'de> ArrayReader<'de> {
     self.remaining == 0
   }
 
-  pub fn read_str(&mut self) -> DecodeResult<&'de str> {
+  pub fn read_str(&mut self) -> RedrawDecodeResult<&'de str> {
     self.ensure_remaining()?;
     let value = self.reader.read_str()?;
     self.remaining -= 1;
     Ok(value)
   }
 
-  pub fn read_u64(&mut self) -> DecodeResult<u64> {
+  pub fn read_u64(&mut self) -> RedrawDecodeResult<u64> {
     self.ensure_remaining()?;
     let value = self.reader.read_u64()?;
     self.remaining -= 1;
     Ok(value)
   }
 
-  pub fn read_i64(&mut self) -> DecodeResult<i64> {
+  pub fn read_i64(&mut self) -> RedrawDecodeResult<i64> {
     self.ensure_remaining()?;
     let value = self.reader.read_i64()?;
     self.remaining -= 1;
     Ok(value)
   }
 
-  pub fn read_bool(&mut self) -> DecodeResult<bool> {
+  pub fn read_bool(&mut self) -> RedrawDecodeResult<bool> {
     self.ensure_remaining()?;
     let value = self.reader.read_bool()?;
     self.remaining -= 1;
@@ -217,8 +366,8 @@ impl<'de> ArrayReader<'de> {
 
   pub fn read_array<T>(
     &mut self,
-    f: impl FnOnce(&mut ArrayReader<'de>) -> DecodeResult<T>,
-  ) -> DecodeResult<T> {
+    f: impl FnOnce(&mut ArrayReader<'de>) -> RedrawDecodeResult<T>,
+  ) -> RedrawDecodeResult<T> {
     self.ensure_remaining()?;
 
     let mut values = self.reader.read_array_reader()?;
@@ -233,8 +382,8 @@ impl<'de> ArrayReader<'de> {
 
   pub fn read_map<T>(
     &mut self,
-    f: impl FnOnce(&mut MapReader<'de>) -> DecodeResult<T>,
-  ) -> DecodeResult<T> {
+    f: impl FnOnce(&mut MapReader<'de>) -> RedrawDecodeResult<T>,
+  ) -> RedrawDecodeResult<T> {
     self.ensure_remaining()?;
 
     let mut entries = self.reader.read_map_reader()?;
@@ -247,28 +396,28 @@ impl<'de> ArrayReader<'de> {
     Ok(value)
   }
 
-  pub fn read_value(&mut self) -> DecodeResult<Value> {
+  pub fn read_value(&mut self) -> RedrawDecodeResult<Value> {
     self.ensure_remaining()?;
     let value = self.reader.read_value()?;
     self.remaining -= 1;
     Ok(value)
   }
 
-  pub fn read_raw_value(&mut self) -> DecodeResult<RawMsgpack<'de>> {
+  pub fn read_raw_value(&mut self) -> RedrawDecodeResult<RawMsgpack<'de>> {
     self.ensure_remaining()?;
     let value = self.reader.read_raw_value()?;
     self.remaining -= 1;
     Ok(value)
   }
 
-  pub fn skip_next(&mut self) -> DecodeResult<()> {
+  pub fn skip_next(&mut self) -> RedrawDecodeResult<()> {
     self.ensure_remaining()?;
     self.reader.skip_value()?;
     self.remaining -= 1;
     Ok(())
   }
 
-  pub fn skip_remaining(&mut self) -> DecodeResult<()> {
+  pub fn skip_remaining(&mut self) -> RedrawDecodeResult<()> {
     while self.remaining > 0 {
       self.skip_next()?;
     }
@@ -285,12 +434,9 @@ impl<'de> ArrayReader<'de> {
     }
   }
 
-  fn ensure_remaining(&self) -> DecodeResult<()> {
+  fn ensure_remaining(&self) -> RedrawDecodeResult<()> {
     if self.remaining == 0 {
-      return Err(decode_io_error(
-        ErrorKind::UnexpectedEof,
-        "msgpack array has no remaining elements",
-      ));
+      return Err(RedrawDecodeError::Incomplete);
     }
 
     Ok(())
@@ -317,7 +463,7 @@ impl<'de> MapReader<'de> {
 
   pub fn read_raw_pair(
     &mut self,
-  ) -> DecodeResult<(RawMsgpack<'de>, RawMsgpack<'de>)> {
+  ) -> RedrawDecodeResult<(RawMsgpack<'de>, RawMsgpack<'de>)> {
     self.ensure_remaining()?;
     let key = self.reader.read_raw_value()?;
     let value = self.reader.read_raw_value()?;
@@ -325,7 +471,7 @@ impl<'de> MapReader<'de> {
     Ok((key, value))
   }
 
-  pub fn read_value_pair(&mut self) -> DecodeResult<(Value, Value)> {
+  pub fn read_value_pair(&mut self) -> RedrawDecodeResult<(Value, Value)> {
     self.ensure_remaining()?;
     let key = self.reader.read_value()?;
     let value = self.reader.read_value()?;
@@ -333,7 +479,7 @@ impl<'de> MapReader<'de> {
     Ok((key, value))
   }
 
-  pub fn skip_next(&mut self) -> DecodeResult<()> {
+  pub fn skip_next(&mut self) -> RedrawDecodeResult<()> {
     self.ensure_remaining()?;
     self.reader.skip_value()?;
     self.reader.skip_value()?;
@@ -341,7 +487,7 @@ impl<'de> MapReader<'de> {
     Ok(())
   }
 
-  pub fn skip_remaining(&mut self) -> DecodeResult<()> {
+  pub fn skip_remaining(&mut self) -> RedrawDecodeResult<()> {
     while self.remaining > 0 {
       self.skip_next()?;
     }
@@ -349,12 +495,9 @@ impl<'de> MapReader<'de> {
     Ok(())
   }
 
-  fn ensure_remaining(&self) -> DecodeResult<()> {
+  fn ensure_remaining(&self) -> RedrawDecodeResult<()> {
     if self.remaining == 0 {
-      return Err(decode_io_error(
-        ErrorKind::UnexpectedEof,
-        "msgpack map has no remaining entries",
-      ));
+      return Err(RedrawDecodeError::Incomplete);
     }
 
     Ok(())
@@ -386,72 +529,66 @@ impl<'de> MsgpackReader<'de> {
     Ok(value)
   }
 
-  fn read_str(&mut self) -> DecodeResult<&'de str> {
+  fn read_str(&mut self) -> RedrawDecodeResult<&'de str> {
     match decode::read_str_from_slice(self.remaining_slice()) {
       Ok((value, tail)) => {
         self.position = self.input.len() - tail.len();
         Ok(value)
       }
-      Err(err) => Err(unexpected_payload(err)),
+      Err(err) => Err(err.into()),
     }
   }
 
-  fn read_str_eq(&mut self, expected: &str) -> DecodeResult<Option<bool>> {
+  fn read_str_eq(&mut self, expected: &str) -> RedrawDecodeResult<bool> {
     match decode::read_str_from_slice(self.remaining_slice()) {
       Ok((value, tail)) => {
         self.position = self.input.len() - tail.len();
-        Ok(Some(value == expected))
+        Ok(value == expected)
       }
-      Err(DecodeStringError::TypeMismatch(_)) => Ok(Some(false)),
-      Err(err) if string_read_error_is_incomplete(&err) => Ok(None),
-      Err(err) => Err(unexpected_payload(err)),
+      Err(DecodeStringError::TypeMismatch(_)) => Ok(false),
+      Err(err) => Err(err.into()),
     }
   }
 
-  fn read_u64(&mut self) -> DecodeResult<u64> {
-    self
-      .read_rmp(|reader| decode::read_int::<u64, _>(reader))
-      .map_err(unexpected_payload)
+  fn read_u64(&mut self) -> RedrawDecodeResult<u64> {
+    Ok(self.read_rmp(decode::read_int::<u64, _>)?)
   }
 
-  fn read_i64(&mut self) -> DecodeResult<i64> {
-    self
-      .read_rmp(|reader| decode::read_int::<i64, _>(reader))
-      .map_err(unexpected_payload)
+  fn read_i64(&mut self) -> RedrawDecodeResult<i64> {
+    Ok(self.read_rmp(decode::read_int::<i64, _>)?)
   }
 
-  fn read_bool(&mut self) -> DecodeResult<bool> {
-    self.read_rmp(decode::read_bool).map_err(unexpected_payload)
+  fn read_bool(&mut self) -> RedrawDecodeResult<bool> {
+    Ok(self.read_rmp(decode::read_bool)?)
   }
 
-  fn read_array_reader(&mut self) -> DecodeResult<ArrayReader<'de>> {
-    self
-      .read_rmp(decode::read_array_len)
-      .map(|remaining| ArrayReader {
-        reader: self.clone(),
-        remaining,
-      })
-      .map_err(unexpected_payload)
+  fn read_array_len(&mut self) -> RedrawDecodeResult<u32> {
+    Ok(self.read_rmp(decode::read_array_len)?)
   }
 
-  fn read_map_reader(&mut self) -> DecodeResult<MapReader<'de>> {
-    self
-      .read_rmp(decode::read_map_len)
-      .map(|remaining| MapReader {
-        reader: self.clone(),
-        remaining,
-      })
-      .map_err(unexpected_payload)
+  fn read_array_reader(&mut self) -> RedrawDecodeResult<ArrayReader<'de>> {
+    self.read_array_len().map(|remaining| ArrayReader {
+      reader: self.clone(),
+      remaining,
+    })
   }
 
-  fn read_value(&mut self) -> DecodeResult<Value> {
+  fn read_map_reader(&mut self) -> RedrawDecodeResult<MapReader<'de>> {
+    let remaining = self.read_rmp(decode::read_map_len)?;
+    Ok(MapReader {
+      reader: self.clone(),
+      remaining,
+    })
+  }
+
+  fn read_value(&mut self) -> RedrawDecodeResult<Value> {
     let mut cursor = Cursor::new(&self.input[self.position..]);
     let value = read_value(&mut cursor)?;
     self.position += cursor.position() as usize;
     Ok(value)
   }
 
-  fn read_raw_value(&mut self) -> DecodeResult<RawMsgpack<'de>> {
+  fn read_raw_value(&mut self) -> RedrawDecodeResult<RawMsgpack<'de>> {
     let start = self.position;
     self.skip_value()?;
     Ok(RawMsgpack {
@@ -459,14 +596,11 @@ impl<'de> MsgpackReader<'de> {
     })
   }
 
-  fn skip_value(&mut self) -> DecodeResult<()> {
+  fn skip_value(&mut self) -> RedrawDecodeResult<()> {
     // Redraw payloads come from the local Neovim process and are treated as
     // trusted input, so this skip reader intentionally does not enforce a
     // nesting depth limit.
-    let marker = self
-      .read_rmp(decode::read_marker)
-      .map_err(unexpected_payload)?;
-    match marker {
+    match self.read_rmp(decode::read_marker)? {
       Marker::FixPos(_)
       | Marker::FixNeg(_)
       | Marker::Null
@@ -538,14 +672,13 @@ impl<'de> MsgpackReader<'de> {
         let len = self.read_data_u32()?;
         self.skip_map_values(len)
       }
-      Marker::Reserved => Err(decode_io_error(
-        ErrorKind::InvalidData,
-        "reserved msgpack marker",
+      Marker::Reserved => Err(RedrawDecodeError::Invalid(
+        "reserved msgpack marker".to_owned(),
       )),
     }
   }
 
-  fn skip_values(&mut self, count: u32) -> DecodeResult<()> {
+  fn skip_values(&mut self, count: u32) -> RedrawDecodeResult<()> {
     for _ in 0..count {
       self.skip_value()?;
     }
@@ -553,111 +686,49 @@ impl<'de> MsgpackReader<'de> {
     Ok(())
   }
 
-  fn skip_map_values(&mut self, len: u32) -> DecodeResult<()> {
+  fn skip_map_values(&mut self, len: u32) -> RedrawDecodeResult<()> {
     let count = len.checked_mul(2).ok_or_else(|| {
-      io::Error::new(ErrorKind::InvalidData, "msgpack map length is too large")
+      RedrawDecodeError::Invalid("msgpack map length is too large".to_owned())
     })?;
 
     self.skip_values(count)
   }
 
-  fn read_data_u8(&mut self) -> DecodeResult<u8> {
-    self
-      .read_rmp(|reader| reader.read_data_u8())
-      .map_err(unexpected_payload)
+  fn read_data_u8(&mut self) -> RedrawDecodeResult<u8> {
+    Ok(self.read_rmp(RmpRead::read_data_u8)?)
   }
 
-  fn read_data_u16(&mut self) -> DecodeResult<u16> {
-    self
-      .read_rmp(|reader| reader.read_data_u16())
-      .map_err(unexpected_payload)
+  fn read_data_u16(&mut self) -> RedrawDecodeResult<u16> {
+    Ok(self.read_rmp(RmpRead::read_data_u16)?)
   }
 
-  fn read_data_u32(&mut self) -> DecodeResult<u32> {
-    self
-      .read_rmp(|reader| reader.read_data_u32())
-      .map_err(unexpected_payload)
+  fn read_data_u32(&mut self) -> RedrawDecodeResult<u32> {
+    Ok(self.read_rmp(RmpRead::read_data_u32)?)
   }
 
-  fn skip_bytes(&mut self, len: usize) -> DecodeResult<()> {
+  fn skip_bytes(&mut self, len: usize) -> RedrawDecodeResult<()> {
     self.take(len)?;
     Ok(())
   }
 
-  fn skip_ext_payload(&mut self, data_len: usize) -> DecodeResult<()> {
+  fn skip_ext_payload(&mut self, data_len: usize) -> RedrawDecodeResult<()> {
     self.skip_bytes(1 + data_len)
   }
 
-  fn take(&mut self, len: usize) -> DecodeResult<&'de [u8]> {
-    let end = self.position.checked_add(len).ok_or_else(|| {
-      io::Error::new(ErrorKind::InvalidData, "msgpack cursor overflow")
-    })?;
+  fn take(&mut self, len: usize) -> RedrawDecodeResult<&'de [u8]> {
+    let Some(end) = self.position.checked_add(len) else {
+      let err = RedrawDecodeError::Invalid("msgpack cursor overflow".into());
+      return Err(err);
+    };
 
     if end > self.input.len() {
-      return Err(decode_io_error(
-        ErrorKind::UnexpectedEof,
-        "incomplete msgpack value",
-      ));
+      return Err(RedrawDecodeError::Incomplete);
     }
 
     let bytes = &self.input[self.position..end];
     self.position = end;
     Ok(bytes)
   }
-}
-
-fn decode_io_error(kind: ErrorKind, message: &'static str) -> Box<DecodeError> {
-  io::Error::new(kind, message).into()
-}
-
-fn type_error(message: String) -> Box<DecodeError> {
-  io::Error::new(ErrorKind::InvalidData, message).into()
-}
-
-fn unexpected_payload(err: impl Debug) -> Box<DecodeError> {
-  type_error(format!("unexpected msgpack payload {err:?}"))
-}
-
-fn value_read_error_is_incomplete(
-  err: &ValueReadError<BytesReadError>,
-) -> bool {
-  match err {
-    ValueReadError::InvalidMarkerRead(err)
-    | ValueReadError::InvalidDataRead(err) => {
-      bytes_read_error_is_incomplete(err)
-    }
-    ValueReadError::TypeMismatch(_) => false,
-  }
-}
-
-fn num_value_read_error_is_incomplete(
-  err: &NumValueReadError<BytesReadError>,
-) -> bool {
-  match err {
-    NumValueReadError::InvalidMarkerRead(err)
-    | NumValueReadError::InvalidDataRead(err) => {
-      bytes_read_error_is_incomplete(err)
-    }
-    NumValueReadError::TypeMismatch(_) | NumValueReadError::OutOfRange => false,
-  }
-}
-
-fn string_read_error_is_incomplete(
-  err: &DecodeStringError<'_, BytesReadError>,
-) -> bool {
-  match err {
-    DecodeStringError::InvalidMarkerRead(err)
-    | DecodeStringError::InvalidDataRead(err) => {
-      bytes_read_error_is_incomplete(err)
-    }
-    DecodeStringError::BufferSizeTooSmall(_) => true,
-    DecodeStringError::TypeMismatch(_)
-    | DecodeStringError::InvalidUtf8(_, _) => false,
-  }
-}
-
-fn bytes_read_error_is_incomplete(err: &BytesReadError) -> bool {
-  matches!(err, BytesReadError::InsufficientBytes { .. })
 }
 
 #[cfg(test)]
@@ -692,11 +763,20 @@ mod tests {
   }
 
   #[track_caller]
-  fn assert_reader_error_kind<T>(result: DecodeResult<T>, kind: ErrorKind) {
+  fn assert_reader_error_kind<T>(
+    result: RedrawDecodeResult<T>,
+    kind: ErrorKind,
+  ) {
     let err = result.err().expect("expected reader error");
+    let err = DecodeError::from(err);
     assert!(
-      matches!(*err, DecodeError::ReaderError(ref err) if err.kind() == kind)
+      matches!(err, DecodeError::ReaderError(ref err) if err.kind() == kind)
     );
+  }
+
+  #[track_caller]
+  fn assert_incomplete<T>(result: RedrawDecodeResult<T>) {
+    assert!(matches!(result, Err(RedrawDecodeError::Incomplete)));
   }
 
   #[track_caller]
@@ -763,22 +843,19 @@ mod tests {
     let bytes =
       redraw_notification(vec![Value::from(vec![Value::from("flush")])]);
 
-    assert_eq!(is_redraw_method(&bytes).unwrap(), Some(true));
+    assert!(is_redraw_method(&bytes).unwrap());
   }
 
   #[test]
   fn is_redraw_method_checks_rpc_method_and_params_header() {
     assert_eq!(
       is_redraw_method(&encode_value(Value::from("redraw"))).unwrap(),
-      Some(false)
+      false
     );
-    assert_eq!(
-      is_redraw_method(&rpc_message(Vec::new())).unwrap(),
-      Some(false)
-    );
+    assert!(!is_redraw_method(&rpc_message(Vec::new())).unwrap());
     assert_eq!(
       is_redraw_method(&rpc_message(vec![Value::from(2)])).unwrap(),
-      Some(false)
+      false
     );
 
     let request = rpc_message(vec![
@@ -787,7 +864,7 @@ mod tests {
       Value::from("redraw"),
       Value::from(Vec::<Value>::new()),
     ]);
-    assert_eq!(is_redraw_method(&request).unwrap(), Some(false));
+    assert!(!is_redraw_method(&request).unwrap());
 
     let response = rpc_message(vec![
       Value::from(1),
@@ -795,29 +872,29 @@ mod tests {
       Value::Nil,
       Value::from(true),
     ]);
-    assert_eq!(is_redraw_method(&response).unwrap(), Some(false));
+    assert!(!is_redraw_method(&response).unwrap());
 
     let non_redraw = rpc_message(vec![
       Value::from(2),
       Value::from("not-redraw"),
       Value::from(Vec::<Value>::new()),
     ]);
-    assert_eq!(is_redraw_method(&non_redraw).unwrap(), Some(false));
+    assert!(!is_redraw_method(&non_redraw).unwrap());
 
     let method_only = rpc_message(vec![Value::from(2), Value::from("redraw")]);
-    assert_eq!(is_redraw_method(&method_only).unwrap(), Some(false));
+    assert!(!is_redraw_method(&method_only).unwrap());
 
     let non_array_params = rpc_message(vec![
       Value::from(2),
       Value::from("redraw"),
       Value::from("not-array"),
     ]);
-    assert_eq!(is_redraw_method(&non_array_params).unwrap(), Some(false));
+    assert!(!is_redraw_method(&non_array_params).unwrap());
   }
 
   #[test]
-  fn is_redraw_method_returns_none_for_incomplete_prefix() {
-    assert_eq!(is_redraw_method(&[]).unwrap(), None);
+  fn is_redraw_method_reports_incomplete_prefix() {
+    assert_incomplete(is_redraw_method(&[]));
 
     let missing_params_header = [
       Marker::FixArray(3).to_u8(),
@@ -830,7 +907,7 @@ mod tests {
       b'a',
       b'w',
     ];
-    assert_eq!(is_redraw_method(&missing_params_header).unwrap(), None);
+    assert_incomplete(is_redraw_method(&missing_params_header));
   }
 
   #[test]
@@ -850,7 +927,16 @@ mod tests {
       b'a',
     ];
 
-    assert_eq!(is_redraw_method(&bytes).unwrap(), Some(true));
+    assert!(is_redraw_method(&bytes).unwrap());
+  }
+
+  #[test]
+  fn try_read_redraw_frame_waits_for_complete_payload() {
+    let mut bytes =
+      redraw_notification(vec![Value::from(vec![Value::from("flush")])]);
+    bytes.pop();
+
+    assert!(RedrawFrame::try_read(&bytes).unwrap().is_none());
   }
 
   #[test]
@@ -875,11 +961,11 @@ mod tests {
       2,
       b'a',
     ];
-    assert_eq!(is_redraw_method(&incomplete_method).unwrap(), None);
+    assert_incomplete(is_redraw_method(&incomplete_method));
 
     let incomplete_first_item =
       vec![Marker::FixArray(3).to_u8(), Marker::U16.to_u8(), 1];
-    assert_eq!(is_redraw_method(&incomplete_first_item).unwrap(), None);
+    assert_incomplete(is_redraw_method(&incomplete_first_item));
   }
 
   #[test]
@@ -1139,11 +1225,11 @@ mod tests {
     assert_reader_error_kind(reader.skip_value(), ErrorKind::InvalidData);
 
     let mut reader = MsgpackReader::new(&[]);
-    assert_reader_error_kind(reader.skip_value(), ErrorKind::InvalidData);
+    assert_reader_error_kind(reader.skip_value(), ErrorKind::UnexpectedEof);
 
     let incomplete_bin = [Marker::Bin8.to_u8()];
     let mut reader = MsgpackReader::new(&incomplete_bin);
-    assert_reader_error_kind(reader.skip_value(), ErrorKind::InvalidData);
+    assert_reader_error_kind(reader.skip_value(), ErrorKind::UnexpectedEof);
 
     let incomplete_fixstr = [Marker::FixStr(2).to_u8(), b'a'];
     let mut reader = MsgpackReader::new(&incomplete_fixstr);
@@ -1176,27 +1262,27 @@ mod tests {
   #[test]
   fn msgpack_reader_reports_truncated_reads() {
     let mut reader = MsgpackReader::new(&[]);
-    assert_reader_error_kind(reader.read_bool(), ErrorKind::InvalidData);
+    assert_reader_error_kind(reader.read_bool(), ErrorKind::UnexpectedEof);
 
     let mut reader = MsgpackReader::new(&[]);
-    assert_reader_error_kind(reader.read_i64(), ErrorKind::InvalidData);
+    assert_reader_error_kind(reader.read_i64(), ErrorKind::UnexpectedEof);
 
     let truncated_u64 = [Marker::U64.to_u8(), 0];
     let mut reader = MsgpackReader::new(&truncated_u64);
-    assert_reader_error_kind(reader.read_i64(), ErrorKind::InvalidData);
+    assert_reader_error_kind(reader.read_i64(), ErrorKind::UnexpectedEof);
 
     let truncated_array_len = [Marker::Array16.to_u8()];
     let mut reader = MsgpackReader::new(&truncated_array_len);
     assert_reader_error_kind(
       reader.read_array_reader().map(|_| ()),
-      ErrorKind::InvalidData,
+      ErrorKind::UnexpectedEof,
     );
 
     let truncated_map_len = [Marker::Map16.to_u8()];
     let mut reader = MsgpackReader::new(&truncated_map_len);
     assert_reader_error_kind(
       reader.read_map_reader().map(|_| ()),
-      ErrorKind::InvalidData,
+      ErrorKind::UnexpectedEof,
     );
 
     let truncated_value = [Marker::Str8.to_u8(), 2, b'a'];
@@ -1206,7 +1292,7 @@ mod tests {
     let mut reader = MsgpackReader::new(&[]);
     assert_reader_error_kind(
       reader.read_str().map(|_| ()),
-      ErrorKind::InvalidData,
+      ErrorKind::UnexpectedEof,
     );
   }
 
@@ -1218,27 +1304,5 @@ mod tests {
     };
 
     assert_reader_error_kind(reader.take(1), ErrorKind::InvalidData);
-  }
-
-  #[test]
-  fn unexpected_payload_wraps_rmp_errors_as_invalid_data() {
-    assert_reader_error_kind(
-      Err::<(), _>(unexpected_payload(
-        ValueReadError::<io::Error>::TypeMismatch(Marker::Null),
-      )),
-      ErrorKind::InvalidData,
-    );
-    assert_reader_error_kind(
-      Err::<(), _>(unexpected_payload(
-        rmp::decode::NumValueReadError::<io::Error>::OutOfRange,
-      )),
-      ErrorKind::InvalidData,
-    );
-    assert_reader_error_kind(
-      Err::<(), _>(unexpected_payload(
-        DecodeStringError::<io::Error>::TypeMismatch(Marker::Null),
-      )),
-      ErrorKind::InvalidData,
-    );
   }
 }

@@ -27,6 +27,7 @@ use crate::{
     handler::Handler,
     model,
     model::{IntoVal, RpcMessage},
+    redraw::RedrawFrame,
   },
   uioptions::UiAttachOptions,
 };
@@ -107,8 +108,9 @@ where
     };
 
     let (sender, receiver) = unbounded();
+    let io_handler = handler.clone();
     let fut = future::try_join(
-      req.clone().io_loop(reader, sender),
+      req.clone().io_loop(reader, sender, io_handler),
       req.clone().handler_loop(handler, receiver),
     )
     .map_ok(|_| ());
@@ -204,8 +206,9 @@ where
     }
 
     let (sender, receiver) = unbounded();
+    let io_handler = handler.clone();
     let fut = future::try_join(
-      instance.clone().io_loop(reader, sender),
+      instance.clone().io_loop(reader, sender, io_handler),
       instance.clone().handler_loop(handler, receiver),
     )
     .map_ok(|_| ());
@@ -361,24 +364,27 @@ where
     }
   }
 
-  async fn io_loop<R>(
+  async fn io_loop<R, H>(
     self,
     mut reader: R,
     mut sender: UnboundedSender<RpcMessage>,
+    handler: H,
   ) -> Result<(), Box<LoopError>>
   where
     R: AsyncRead + Send + Unpin + 'static,
+    H: Handler<Writer = W>,
   {
     let mut decoder = model::DecodeState::new();
 
     loop {
-      let msg = match decoder.decode(&mut reader).await {
-        Ok(msg) => msg,
-        Err(err) => {
-          let e = self.send_error_to_callers(&self.queue, *err).await?;
-          return Err(Box::new(LoopError::DecodeError(e, None)));
-        }
-      };
+      let msg =
+        match Self::decode_next(&mut decoder, &mut reader, &handler).await {
+          Ok(msg) => msg,
+          Err(err) => {
+            let err = self.send_error_to_callers(&self.queue, err).await?;
+            return Err(Box::new(LoopError::DecodeError(err, None)));
+          }
+        };
 
       debug!("Get message {:?}", msg);
       if let RpcMessage::RpcResponse {
@@ -401,6 +407,32 @@ where
         // Send message to handler_loop()
         sender.send(msg).await.unwrap();
       }
+    }
+  }
+
+  async fn decode_next<R, H>(
+    decoder: &mut model::DecodeState,
+    reader: &mut R,
+    handler: &H,
+  ) -> Result<RpcMessage, DecodeError>
+  where
+    R: AsyncRead + Send + Unpin + 'static,
+    H: Handler<Writer = W>,
+  {
+    loop {
+      while decoder.has_rest() {
+        if let Some(frame) = RedrawFrame::try_read(decoder.rest())? {
+          let consumed = frame.consumed();
+          handler.handle_redraw(frame.into())?;
+          decoder.consume(consumed);
+        } else if let Some(msg) =
+          decoder.try_decode_message().map_err(|err| *err)?
+        {
+          return Ok(msg);
+        }
+      }
+
+      decoder.read_next_chunk(reader).await.map_err(|err| *err)?;
     }
   }
 

@@ -18,6 +18,7 @@ use std::process::Command;
 mod common;
 use common::*;
 
+#[cfg(unix)]
 use navy_nvim_rs::error::HandshakeError;
 
 #[atest]

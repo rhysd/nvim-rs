@@ -7,7 +7,10 @@ use std::{future::Future, marker::PhantomData, sync::Arc};
 use futures::io::AsyncWrite;
 use rmpv::Value;
 
-use crate::Neovim;
+use crate::{
+  Neovim,
+  rpc::redraw::{RedrawDecodeResult, RedrawNotification},
+};
 
 /// The central functionality of a plugin. The trait bounds asure that each
 /// asynchronous task can receive a copy of the handler, so some state can be
@@ -17,6 +20,15 @@ pub trait Handler: Send + Sync + Clone + 'static {
   /// requests/notifications is done on the io loop, which passes the parsed
   /// messages to the handler.
   type Writer: AsyncWrite + Send + Unpin + 'static;
+
+  /// Handling a `redraw` notification on the io loop without allocating an
+  /// owned `String` or `Vec<Value>` for the notification payload.
+  fn handle_redraw(
+    &self,
+    _redraw: RedrawNotification<'_>,
+  ) -> RedrawDecodeResult<()> {
+    Ok(())
+  }
 
   /// Handling an rpc request. The ID's of requests are handled by the
   /// [`neovim`](crate::neovim::Neovim) instance.

@@ -7,9 +7,12 @@ use futures::{
   io::{Cursor, sink},
   lock::Mutex,
 };
-use navy_nvim_rs::rpc::model::{
-  DecodeState, EncodeState, RpcMessage, encode_nvim_input_with_state,
-  encode_with_state,
+use navy_nvim_rs::rpc::{
+  model::{
+    DecodeState, EncodeState, RpcMessage, encode_nvim_input_with_state,
+    encode_with_state,
+  },
+  redraw::{RedrawDecodeResult, RedrawFrame, RedrawNotification},
 };
 use rmpv::{Value, decode::read_value};
 use std::{collections::HashSet, hint::black_box, sync::Arc};
@@ -45,26 +48,57 @@ fn encode_request_message() -> RpcMessage {
   }
 }
 
-fn decode_one_from_reader_with_state(
-  decoder: &mut DecodeState,
-  bytes: Vec<u8>,
-) -> RpcMessage {
-  let mut reader = Cursor::new(bytes);
-  block_on(decoder.decode(&mut reader)).unwrap()
+fn consume_redraw_for_bench(
+  mut redraw: RedrawNotification<'_>,
+) -> RedrawDecodeResult<usize> {
+  let mut payload_count = 0;
+
+  redraw.for_each_batch(|batch| {
+    black_box(batch.name());
+    batch.for_each_payload(|payload| {
+      payload_count += 1;
+      black_box(payload.as_bytes());
+      Ok(())
+    })
+  })?;
+
+  Ok(payload_count)
 }
 
-fn decode_many_from_reader_with_state(
+fn read_current_path_from_reader(
   decoder: &mut DecodeState,
   bytes: Vec<u8>,
   count: usize,
 ) -> usize {
   let mut reader = Cursor::new(bytes);
 
-  for _ in 0..count {
-    let msg = block_on(decoder.decode(&mut reader)).unwrap();
-    black_box(msg);
-  }
-  count
+  block_on(async {
+    let mut decoded = 0;
+    let mut payload_count = 0;
+
+    while decoded < count {
+      while decoder.has_rest() {
+        if let Some(frame) = RedrawFrame::try_read(decoder.rest()).unwrap() {
+          let consumed = frame.consumed();
+          payload_count += consume_redraw_for_bench(frame.into()).unwrap();
+          decoder.consume(consumed);
+        } else if let Some(msg) = decoder.try_decode_message().unwrap() {
+          black_box(msg);
+        } else {
+          break;
+        }
+
+        decoded += 1;
+        if decoded == count {
+          return payload_count;
+        }
+      }
+
+      decoder.read_next_chunk(&mut reader).await.unwrap();
+    }
+
+    payload_count
+  })
 }
 
 fn read_u32(input: &mut &[u8]) -> u32 {
@@ -256,7 +290,7 @@ fn bench_decode(c: &mut Criterion) {
         b.iter_batched(
           || bytes.clone(),
           |bytes| {
-            black_box(decode_one_from_reader_with_state(&mut decoder, bytes))
+            black_box(read_current_path_from_reader(&mut decoder, bytes, 1))
           },
           BatchSize::SmallInput,
         );
@@ -275,7 +309,7 @@ fn bench_decode(c: &mut Criterion) {
     b.iter_batched(
       || ui_batch.clone(),
       |bytes| {
-        black_box(decode_many_from_reader_with_state(
+        black_box(read_current_path_from_reader(
           &mut decoder,
           bytes,
           ui_batch_count,
@@ -296,7 +330,7 @@ fn bench_decode(c: &mut Criterion) {
     b.iter_batched(
       || scroll_ui_batch.clone(),
       |bytes| {
-        black_box(decode_many_from_reader_with_state(
+        black_box(read_current_path_from_reader(
           &mut decoder,
           bytes,
           scroll_ui_batch_count,

@@ -45,6 +45,7 @@ pub enum RpcMessage {
 pub struct DecodeState {
   rest: Vec<u8>,
   start: usize,
+  // OnceCell is not available because `get_mut_or_init` is not stabilized yet
   read_buf: Option<Box<[u8; DECODE_READ_BUFFER_SIZE]>>,
 }
 
@@ -79,62 +80,56 @@ impl DecodeState {
     self.rest
   }
 
-  pub async fn decode<R>(
-    &mut self,
-    reader: &mut R,
-  ) -> Result<RpcMessage, Box<DecodeError>>
-  where
-    R: AsyncRead + Send + Unpin + 'static,
-  {
-    loop {
-      if self.has_rest()
-        && let Some(msg) = self.try_decode_rest()?
-      {
-        return Ok(msg);
-      }
-
-      debug!("Not enough data, reading more!");
-      self.compact_rest();
-      let bytes_read = {
-        let read_buf = self
-          .read_buf
-          .get_or_insert_with(|| Box::new([0; DECODE_READ_BUFFER_SIZE]));
-        reader.read(&mut read_buf[..]).await
-      };
-
-      match bytes_read {
-        Ok(n) if n == 0 => {
-          return Err(io::Error::new(ErrorKind::UnexpectedEof, "EOF").into());
-        }
-        Ok(n) => {
-          let read_buf = self
-            .read_buf
-            .as_ref()
-            .expect("read buffer was initialized before reading");
-          self.rest.extend_from_slice(&read_buf[..n]);
-        }
-        Err(err) => return Err(err.into()),
-      }
-    }
-  }
-
-  fn has_rest(&self) -> bool {
+  pub fn has_rest(&self) -> bool {
     self.start < self.rest.len()
   }
 
-  fn try_decode_rest(
+  pub fn rest(&self) -> &[u8] {
+    &self.rest[self.start..]
+  }
+
+  pub fn try_decode_message(
     &mut self,
   ) -> Result<Option<RpcMessage>, Box<DecodeError>> {
     match try_decode_slice(&self.rest[self.start..])? {
       Some((msg, consumed)) => {
-        self.start += consumed;
-        if self.start == self.rest.len() {
-          self.rest.clear();
-          self.start = 0;
-        }
+        self.consume(consumed);
         Ok(Some(msg))
       }
       None => Ok(None),
+    }
+  }
+
+  pub fn consume(&mut self, consumed: usize) {
+    self.start += consumed;
+    if self.start >= self.rest.len() {
+      self.rest.clear();
+      self.start = 0;
+    }
+  }
+
+  pub async fn read_next_chunk<R>(
+    &mut self,
+    reader: &mut R,
+  ) -> Result<(), Box<DecodeError>>
+  where
+    R: AsyncRead + Send + Unpin + 'static,
+  {
+    debug!("Not enough data, reading more!");
+    self.compact_rest();
+
+    let read_buf = self
+      .read_buf
+      .get_or_insert_with(|| Box::new([0; DECODE_READ_BUFFER_SIZE]))
+      .as_mut();
+
+    match reader.read(read_buf).await {
+      Ok(0) => Err(io::Error::new(ErrorKind::UnexpectedEof, "EOF").into()),
+      Ok(n) => {
+        self.rest.extend_from_slice(&read_buf[..n]);
+        Ok(())
+      }
+      Err(err) => Err(err.into()),
     }
   }
 
@@ -171,20 +166,6 @@ fn try_decode_slice(
     }
     Err(err) => Err(err.into()),
   }
-}
-
-/// Continously reads from reader, pushing onto `rest`. Then tries to decode the
-/// contents of `rest`. If it succeeds, returns the message, and leaves any
-/// non-decoded bytes in `rest`. If we did not read enough for a full message,
-/// read more. Return on all other errors.
-pub async fn decode<R: AsyncRead + Send + Unpin + 'static>(
-  reader: &mut R,
-  rest: &mut Vec<u8>,
-) -> Result<RpcMessage, Box<DecodeError>> {
-  let mut state = DecodeState::with_rest(std::mem::take(rest));
-  let result = state.decode(reader).await;
-  *rest = state.into_rest();
-  result
 }
 
 struct EnvelopeReader<'a, R> {
@@ -596,6 +577,7 @@ impl IntoVal<Value> for Vec<(Value, Value)> {
 #[cfg(test)]
 mod decode_state_tests {
   use super::*;
+  use crate::rpc::redraw::{RedrawFrame, RedrawNotification};
   use futures::{executor::block_on, io::Cursor};
 
   fn request(msgid: u64, method: &str) -> RpcMessage {
@@ -616,6 +598,23 @@ mod decode_state_tests {
     let mut bytes = Vec::new();
     write_value(&mut bytes, &value).unwrap();
     bytes
+  }
+
+  fn decode_next_from_state(
+    decoder: &mut DecodeState,
+    reader: &mut Cursor<Vec<u8>>,
+  ) -> RpcMessage {
+    block_on(async {
+      loop {
+        while decoder.has_rest() {
+          if let Some(msg) = decoder.try_decode_message().unwrap() {
+            return msg;
+          }
+        }
+
+        decoder.read_next_chunk(reader).await.unwrap();
+      }
+    })
   }
 
   #[test]
@@ -761,25 +760,43 @@ mod decode_state_tests {
     let mut reader = Cursor::new(bytes);
     let mut decoder = DecodeState::new();
 
-    assert_eq!(block_on(decoder.decode(&mut reader)).unwrap(), msg_1);
-    assert_eq!(block_on(decoder.decode(&mut reader)).unwrap(), msg_2);
+    assert_eq!(decode_next_from_state(&mut decoder, &mut reader), msg_1);
+    assert_eq!(decode_next_from_state(&mut decoder, &mut reader), msg_2);
   }
 
   #[test]
-  fn legacy_decode_returns_unconsumed_rest() {
-    let msg_1 = request(1, "test_method");
-    let msg_2 = request(2, "test_method_2");
-    let msg_2_bytes = encoded(msg_2.clone());
+  fn decode_state_reads_redraw_frame_without_owned_message() {
+    let redraw = encoded_value(Value::from(vec![
+      Value::from(2),
+      Value::from("redraw"),
+      Value::from(vec![Value::from(vec![Value::from("flush")])]),
+    ]));
+    let msg = request(1, "test_method");
+    let msg_bytes = encoded(msg.clone());
 
-    let mut rest = encoded(msg_1.clone());
-    rest.extend_from_slice(&msg_2_bytes);
+    let mut rest = redraw;
+    rest.extend_from_slice(&msg_bytes);
+    let mut decoder = DecodeState::with_rest(rest);
 
-    let mut reader = Cursor::new(Vec::new());
-    assert_eq!(block_on(decode(&mut reader, &mut rest)).unwrap(), msg_1);
-    assert_eq!(rest, msg_2_bytes);
+    let consumed = {
+      let frame = RedrawFrame::try_read(decoder.rest()).unwrap().unwrap();
+      let consumed = frame.consumed();
+      let mut redraw: RedrawNotification<'_> = frame.into();
 
-    assert_eq!(block_on(decode(&mut reader, &mut rest)).unwrap(), msg_2);
-    assert!(rest.is_empty());
+      assert_eq!(redraw.batch_count(), 1);
+      redraw
+        .for_each_batch(|batch| {
+          assert_eq!(batch.name(), "flush");
+          assert!(batch.is_empty());
+          Ok(())
+        })
+        .unwrap();
+
+      consumed
+    };
+
+    decoder.consume(consumed);
+    assert_eq!(decoder.into_rest(), msg_bytes);
   }
 }
 
