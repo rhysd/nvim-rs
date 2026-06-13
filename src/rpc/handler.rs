@@ -21,8 +21,8 @@ pub trait Handler: Send + Sync + Clone + 'static {
   /// messages to the handler.
   type Writer: AsyncWrite + Send + Unpin + 'static;
 
-  /// Handling a `redraw` notification on the io loop without allocating an
-  /// owned `String` or `Vec<Value>` for the notification payload.
+  /// Handling a `redraw` notification on the handler loop without allocating
+  /// an owned `String` or `Vec<Value>` for the notification payload.
   fn handle_redraw(
     &self,
     _redraw: RedrawNotification<'_>,

@@ -27,7 +27,7 @@ use crate::{
     handler::Handler,
     model,
     model::{IntoVal, RpcMessage},
-    redraw::RedrawFrame,
+    redraw::{RedrawFrame, RedrawFrameStatus},
   },
   uioptions::UiAttachOptions,
 };
@@ -50,6 +50,12 @@ macro_rules! call_args {
 type ResponseResult = Result<Result<Value, Value>, Arc<DecodeError>>;
 
 type Queue = Arc<Mutex<Vec<(u64, oneshot::Sender<ResponseResult>)>>>;
+
+#[derive(Debug)]
+enum HandlerMessage {
+  RpcMessage(RpcMessage),
+  RedrawPayload(Vec<u8>),
+}
 
 /// An active Neovim session.
 pub struct Neovim<W>
@@ -108,9 +114,8 @@ where
     };
 
     let (sender, receiver) = unbounded();
-    let io_handler = handler.clone();
     let fut = future::try_join(
-      req.clone().io_loop(reader, sender, io_handler),
+      req.clone().io_loop(reader, sender),
       req.clone().handler_loop(handler, receiver),
     )
     .map_ok(|_| ());
@@ -206,9 +211,8 @@ where
     }
 
     let (sender, receiver) = unbounded();
-    let io_handler = handler.clone();
     let fut = future::try_join(
-      instance.clone().io_loop(reader, sender, io_handler),
+      instance.clone().io_loop(reader, sender),
       instance.clone().handler_loop(handler, receiver),
     )
     .map_ok(|_| ());
@@ -308,7 +312,7 @@ where
   async fn handler_loop<H>(
     self,
     handler: H,
-    mut receiver: UnboundedReceiver<RpcMessage>,
+    mut receiver: UnboundedReceiver<HandlerMessage>,
   ) -> Result<(), Box<LoopError>>
   where
     H: Handler<Writer = W> + Spawner,
@@ -324,111 +328,122 @@ where
       };
 
       match msg {
-        RpcMessage::RpcRequest {
-          msgid,
-          method,
-          params,
-        } => {
-          let handler_c = handler.clone();
-          let neovim = self.clone();
-          let writer = self.writer.clone();
-
-          handler.spawn(async move {
-            let response =
-              match handler_c.handle_request(method, params, neovim).await {
-                Ok(result) => RpcMessage::RpcResponse {
-                  msgid,
-                  result,
-                  error: Value::Nil,
-                },
-                Err(error) => RpcMessage::RpcResponse {
-                  msgid,
-                  result: Value::Nil,
-                  error,
-                },
-              };
-
-            model::encode_with_state(writer, response)
-              .await
-              .unwrap_or_else(|e| {
-                error!("Error sending response to request {}: '{}'", msgid, e);
-              });
-          });
+        HandlerMessage::RedrawPayload(bytes) => {
+          let frame = RedrawFrame::read(&bytes)?;
+          handler.handle_redraw(frame.into())?;
         }
-        RpcMessage::RpcNotification { method, params } => {
-          let neovim = self.clone();
-          handler.handle_notify(method, params, neovim).await;
-        }
-        RpcMessage::RpcResponse { .. } => unreachable!(),
+        HandlerMessage::RpcMessage(msg) => match msg {
+          RpcMessage::RpcRequest {
+            msgid,
+            method,
+            params,
+          } => {
+            let handler_c = handler.clone();
+            let neovim = self.clone();
+            let writer = self.writer.clone();
+
+            handler.spawn(async move {
+              let response =
+                match handler_c.handle_request(method, params, neovim).await {
+                  Ok(result) => RpcMessage::RpcResponse {
+                    msgid,
+                    result,
+                    error: Value::Nil,
+                  },
+                  Err(error) => RpcMessage::RpcResponse {
+                    msgid,
+                    result: Value::Nil,
+                    error,
+                  },
+                };
+
+              model::encode_with_state(writer, response)
+                .await
+                .unwrap_or_else(|e| {
+                  error!(
+                    "Error sending response to request {}: '{}'",
+                    msgid, e
+                  );
+                });
+            });
+          }
+          RpcMessage::RpcNotification { method, params } => {
+            let neovim = self.clone();
+            handler.handle_notify(method, params, neovim).await;
+          }
+          RpcMessage::RpcResponse { .. } => unreachable!(),
+        },
       }
     }
   }
 
-  async fn io_loop<R, H>(
+  async fn io_loop<R>(
     self,
     mut reader: R,
-    mut sender: UnboundedSender<RpcMessage>,
-    handler: H,
+    mut sender: UnboundedSender<HandlerMessage>,
   ) -> Result<(), Box<LoopError>>
   where
     R: AsyncRead + Send + Unpin + 'static,
-    H: Handler<Writer = W>,
   {
     let mut decoder = model::DecodeState::new();
 
     loop {
-      let msg =
-        match Self::decode_next(&mut decoder, &mut reader, &handler).await {
-          Ok(msg) => msg,
-          Err(err) => {
-            let err = self.send_error_to_callers(&self.queue, err).await?;
-            return Err(Box::new(LoopError::DecodeError(err, None)));
-          }
-        };
+      let msg = match Self::decode_next(&mut decoder, &mut reader).await {
+        Ok(msg) => msg,
+        Err(err) => {
+          let err = self.send_error_to_callers(&self.queue, err).await?;
+          return Err(Box::new(LoopError::DecodeError(err, None)));
+        }
+      };
 
       debug!("Get message {:?}", msg);
-      if let RpcMessage::RpcResponse {
-        msgid,
-        result,
-        error,
-      } = msg
-      {
-        let sender = find_sender(&self.queue, msgid).await?;
-        if error == Value::Nil {
-          sender
-            .send(Ok(Ok(result)))
-            .map_err(|r| (msgid, r.expect("This was an OK(_)")))?;
-        } else {
-          sender
-            .send(Ok(Err(error)))
-            .map_err(|r| (msgid, r.expect("This was an OK(_)")))?;
+      match msg {
+        HandlerMessage::RpcMessage(RpcMessage::RpcResponse {
+          msgid,
+          result,
+          error,
+        }) => {
+          let sender = find_sender(&self.queue, msgid).await?;
+          if error == Value::Nil {
+            sender
+              .send(Ok(Ok(result)))
+              .map_err(|r| (msgid, r.expect("This was an OK(_)")))?;
+          } else {
+            sender
+              .send(Ok(Err(error)))
+              .map_err(|r| (msgid, r.expect("This was an OK(_)")))?;
+          }
         }
-      } else {
-        // Send message to handler_loop()
-        sender.send(msg).await.unwrap();
+        msg => {
+          // Send message to handler_loop()
+          sender.send(msg).await.unwrap();
+        }
       }
     }
   }
 
-  async fn decode_next<R, H>(
+  async fn decode_next<R>(
     decoder: &mut model::DecodeState,
     reader: &mut R,
-    handler: &H,
-  ) -> Result<RpcMessage, DecodeError>
+  ) -> Result<HandlerMessage, DecodeError>
   where
     R: AsyncRead + Send + Unpin + 'static,
-    H: Handler<Writer = W>,
   {
     loop {
-      while decoder.has_rest() {
-        if let Some(frame) = RedrawFrame::try_read(decoder.rest())? {
-          let consumed = frame.consumed();
-          handler.handle_redraw(frame.into())?;
-          decoder.consume(consumed);
-        } else if let Some(msg) =
-          decoder.try_decode_message().map_err(|err| *err)?
-        {
-          return Ok(msg);
+      if decoder.has_rest() {
+        match RedrawFrame::probe(decoder.rest())? {
+          RedrawFrameStatus::Complete { consumed } => {
+            let bytes = decoder.take(consumed).to_vec();
+            return Ok(HandlerMessage::RedrawPayload(bytes));
+          }
+          RedrawFrameStatus::Incomplete => {}
+          RedrawFrameStatus::NotRedraw => {
+            if let Some(msg) =
+              decoder.try_decode_message().map_err(|err| *err)?
+            {
+              return Ok(HandlerMessage::RpcMessage(msg));
+            }
+          }
         }
       }
 
@@ -503,7 +518,104 @@ async fn find_sender(
 
 #[cfg(all(test, feature = "use_tokio"))]
 mod tests {
+  use std::sync::{
+    Arc,
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+  };
+
+  use futures::{SinkExt, executor::block_on, io::Cursor};
+  use rmpv::encode::write_value;
+
   use super::*;
+  use crate::rpc::redraw::{RedrawDecodeResult, RedrawNotification};
+
+  #[derive(Clone)]
+  struct CountingHandler {
+    redraw_count: Arc<AtomicUsize>,
+  }
+
+  impl Handler for CountingHandler {
+    type Writer = Cursor<Vec<u8>>;
+
+    fn handle_redraw(
+      &self,
+      mut redraw: RedrawNotification<'_>,
+    ) -> RedrawDecodeResult<()> {
+      redraw.for_each_batch(|batch| {
+        assert_eq!(batch.name, "flush");
+        assert!(batch.args.is_empty());
+        Ok(true)
+      })?;
+      self.redraw_count.fetch_add(1, Ordering::Relaxed);
+      Ok(())
+    }
+  }
+
+  fn encoded_value(value: Value) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    write_value(&mut bytes, &value).unwrap();
+    bytes
+  }
+
+  fn redraw_bytes() -> Vec<u8> {
+    encoded_value(Value::from(vec![
+      Value::from(2),
+      Value::from("redraw"),
+      Value::from(vec![Value::from(vec![Value::from("flush")])]),
+    ]))
+  }
+
+  fn test_neovim() -> Neovim<Cursor<Vec<u8>>> {
+    Neovim {
+      writer: Arc::new(Mutex::new(model::EncodeState::new(Cursor::new(
+        Vec::new(),
+      )))),
+      queue: Arc::new(Mutex::new(Vec::new())),
+      msgid_counter: Arc::new(AtomicU64::new(0)),
+    }
+  }
+
+  #[test]
+  fn decode_next_waits_for_complete_redraw_prefix() {
+    let redraw = redraw_bytes();
+    let prefix = [0x93, b'\x02', 0xa6, b'r', b'e', b'd', b'r', b'a', b'w'];
+
+    assert!(redraw.starts_with(&prefix));
+
+    let mut decoder = model::DecodeState::with_rest(prefix.to_vec());
+    let mut reader = Cursor::new(redraw[prefix.len()..].to_vec());
+    let msg = block_on(Neovim::<Cursor<Vec<u8>>>::decode_next(
+      &mut decoder,
+      &mut reader,
+    ))
+    .unwrap();
+
+    match msg {
+      HandlerMessage::RedrawPayload(bytes) => assert_eq!(bytes, redraw),
+      msg => panic!("unexpected message: {msg:?}"),
+    }
+  }
+
+  #[test]
+  fn handler_loop_handles_redraw_message() {
+    let (mut sender, receiver) = unbounded();
+    let redraw_count = Arc::new(AtomicUsize::new(0));
+    let handler = CountingHandler {
+      redraw_count: redraw_count.clone(),
+    };
+
+    block_on(async {
+      sender
+        .send(HandlerMessage::RedrawPayload(redraw_bytes()))
+        .await
+        .unwrap();
+      drop(sender);
+
+      test_neovim().handler_loop(handler, receiver).await.unwrap();
+    });
+
+    assert_eq!(redraw_count.load(Ordering::Relaxed), 1);
+  }
 
   #[tokio::test]
   async fn test_find_sender() {

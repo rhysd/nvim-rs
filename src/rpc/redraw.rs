@@ -3,6 +3,7 @@
 use std::{
   fmt::Debug,
   io::{self, Cursor, ErrorKind},
+  sync::Arc,
 };
 
 use rmp::{
@@ -14,7 +15,7 @@ use rmp::{
 };
 use rmpv::{Value, decode::read_value};
 
-use crate::error::DecodeError;
+use crate::error::{DecodeError, LoopError};
 
 pub type RedrawDecodeResult<T> = Result<T, RedrawDecodeError>;
 
@@ -41,6 +42,12 @@ impl From<RedrawDecodeError> for DecodeError {
         Self::ReaderError(io::Error::new(ErrorKind::InvalidData, message))
       }
     }
+  }
+}
+
+impl From<RedrawDecodeError> for Box<LoopError> {
+  fn from(value: RedrawDecodeError) -> Self {
+    Box::new(LoopError::DecodeError(Arc::new(value.into()), None))
   }
 }
 
@@ -122,26 +129,47 @@ pub struct RedrawFrame<'de> {
   consumed: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedrawFrameStatus {
+  Complete { consumed: usize },
+  Incomplete,
+  NotRedraw,
+}
+
 impl<'de> RedrawFrame<'de> {
+  pub fn probe(
+    bytes: &'de [u8],
+  ) -> Result<RedrawFrameStatus, RedrawDecodeError> {
+    match is_redraw_method(bytes) {
+      Ok(true) => {}
+      Ok(false) => return Ok(RedrawFrameStatus::NotRedraw),
+      Err(RedrawDecodeError::Incomplete) => {
+        return Ok(RedrawFrameStatus::Incomplete);
+      }
+      Err(err) => return Err(err),
+    }
+
+    match Self::read(bytes) {
+      Ok(frame) => Ok(RedrawFrameStatus::Complete {
+        consumed: frame.consumed,
+      }),
+      Err(RedrawDecodeError::Incomplete) => Ok(RedrawFrameStatus::Incomplete),
+      Err(err) => Err(err),
+    }
+  }
+
   /// Try to read a complete msgpack-rpc `redraw` notification frame.
   ///
   /// `Ok(None)` means either the next frame is not a `redraw` notification or
   /// the frame is not complete yet.
   pub fn try_read(bytes: &'de [u8]) -> Result<Option<Self>, RedrawDecodeError> {
-    match is_redraw_method(bytes) {
-      Ok(true) => {}
-      Ok(false) | Err(RedrawDecodeError::Incomplete) => return Ok(None),
-      Err(err) => return Err(err),
-    }
-
-    match Self::read(bytes) {
-      Ok(frame) => Ok(Some(frame)),
-      Err(RedrawDecodeError::Incomplete) => Ok(None),
-      Err(err) => Err(err),
+    match Self::probe(bytes)? {
+      RedrawFrameStatus::Complete { .. } => Self::read(bytes).map(Some),
+      RedrawFrameStatus::Incomplete | RedrawFrameStatus::NotRedraw => Ok(None),
     }
   }
 
-  fn read(bytes: &'de [u8]) -> Result<Self, RedrawDecodeError> {
+  pub(crate) fn read(bytes: &'de [u8]) -> Result<Self, RedrawDecodeError> {
     let mut reader = MsgpackReader::new(bytes);
     let outer_len = reader.read_array_len()?;
 
@@ -1014,6 +1042,44 @@ mod tests {
     ];
 
     assert!(is_redraw_method(&bytes).unwrap());
+  }
+
+  #[test]
+  fn redraw_frame_probe_reports_complete_incomplete_and_not_redraw() {
+    let redraw =
+      redraw_notification(vec![Value::from(vec![Value::from("flush")])]);
+    let incomplete_redraw_prefix = [
+      Marker::FixArray(3).to_u8(),
+      2,
+      Marker::FixStr(6).to_u8(),
+      b'r',
+      b'e',
+      b'd',
+      b'r',
+      b'a',
+      b'w',
+    ];
+    let request = rpc_message(vec![
+      Value::from(0),
+      Value::from(1),
+      Value::from("method"),
+      Value::from(Vec::<Value>::new()),
+    ]);
+
+    assert_eq!(
+      RedrawFrame::probe(&redraw).unwrap(),
+      RedrawFrameStatus::Complete {
+        consumed: redraw.len()
+      }
+    );
+    assert_eq!(
+      RedrawFrame::probe(&incomplete_redraw_prefix).unwrap(),
+      RedrawFrameStatus::Incomplete
+    );
+    assert_eq!(
+      RedrawFrame::probe(&request).unwrap(),
+      RedrawFrameStatus::NotRedraw
+    );
   }
 
   #[test]

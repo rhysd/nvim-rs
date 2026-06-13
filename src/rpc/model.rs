@@ -108,6 +108,16 @@ impl DecodeState {
     }
   }
 
+  pub fn take(&mut self, size: usize) -> &[u8] {
+    let start = self.start;
+    let end = start
+      .checked_add(size)
+      .expect("decode buffer cursor overflow");
+    assert!(end <= self.rest.len(), "decode buffer take out of bounds");
+    self.start = end;
+    &self.rest[start..end]
+  }
+
   pub async fn read_next_chunk<R>(
     &mut self,
     reader: &mut R,
@@ -762,6 +772,17 @@ mod decode_state_tests {
 
     assert_eq!(decode_next_from_state(&mut decoder, &mut reader), msg_1);
     assert_eq!(decode_next_from_state(&mut decoder, &mut reader), msg_2);
+  }
+
+  #[test]
+  fn decode_state_takes_bytes_from_rest() {
+    let mut decoder = DecodeState::with_rest(b"abcdef".to_vec());
+
+    assert_eq!(decoder.take(2), b"ab");
+    assert_eq!(decoder.rest(), b"cdef");
+    assert_eq!(decoder.take(4), b"cdef");
+    assert!(!decoder.has_rest());
+    assert!(decoder.into_rest().is_empty());
   }
 
   #[test]
