@@ -303,12 +303,8 @@ fn bench_encode(c: &mut Criterion) {
     let state = Arc::new(Mutex::new(EncodeState::new(sink())));
     b.iter(|| {
       black_box(
-        block_on(encode_nvim_input_with_state(
-          state.clone(),
-          1,
-          black_box("<C-D>"),
-        ))
-        .unwrap(),
+        block_on(encode_nvim_input_with_state(state.clone(), 1, "<C-D>"))
+          .unwrap(),
       )
     });
   });
@@ -396,7 +392,7 @@ fn bench_redraw_array_reader(c: &mut Criterion) {
     group.bench_with_input(
       BenchmarkId::new("single_nvim_ui_init", &input.name),
       &input.bytes,
-      |b, bytes| b.iter(|| black_box(parse_redraw_arrays(black_box(bytes)))),
+      |b, bytes| b.iter(|| black_box(parse_redraw_arrays(bytes))),
     );
   }
 
@@ -407,12 +403,7 @@ fn bench_redraw_array_reader(c: &mut Criterion) {
     .collect::<Vec<_>>();
   group.throughput(Throughput::Bytes(ui_batch.len() as u64));
   group.bench_function("batch_nvim_ui_init", |b| {
-    b.iter(|| {
-      black_box(parse_redraw_arrays_batch(
-        black_box(&ui_batch),
-        ui_batch_count,
-      ))
-    });
+    b.iter(|| black_box(parse_redraw_arrays_batch(&ui_batch, ui_batch_count)));
   });
 
   let scroll_ui_batch_count = captured_scroll_ui.len();
@@ -424,7 +415,7 @@ fn bench_redraw_array_reader(c: &mut Criterion) {
   group.bench_function("batch_nvim_ui_scroll", |b| {
     b.iter(|| {
       black_box(parse_redraw_arrays_batch(
-        black_box(&scroll_ui_batch),
+        &scroll_ui_batch,
         scroll_ui_batch_count,
       ))
     });
