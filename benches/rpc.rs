@@ -60,7 +60,7 @@ fn consume_redraw_for_bench(
       payload_count += 1;
       black_box(payload.as_bytes());
     }
-    Ok(())
+    Ok(true)
   })?;
 
   Ok(payload_count)
@@ -84,7 +84,7 @@ fn consume_redraw_arrays_for_bench(
         Ok(())
       })?;
     }
-    Ok(())
+    Ok(true)
   })?;
 
   Ok(value_count)

@@ -270,7 +270,7 @@ impl<'de> RedrawNotification<'de> {
 
   pub fn for_each_batch<F>(&mut self, mut f: F) -> RedrawDecodeResult<()>
   where
-    F: FnMut(&mut RedrawBatch<'de>) -> RedrawDecodeResult<()>,
+    F: FnMut(&mut RedrawBatch<'de>) -> RedrawDecodeResult<bool>,
   {
     while !self.params.is_empty() {
       self.params.ensure_remaining()?;
@@ -282,9 +282,13 @@ impl<'de> RedrawNotification<'de> {
       let args = batch_items.take_remaining();
       let mut batch = RedrawBatch { name, args };
 
-      f(&mut batch)?;
+      let should_continue = f(&mut batch)?;
       batch.args.skip_remaining()?;
       self.params.reader.position = batch.args.reader.position;
+
+      if !should_continue {
+        break;
+      }
     }
 
     Ok(())
@@ -1079,7 +1083,7 @@ mod tests {
           assert!(batch.args.is_empty());
         }
 
-        Ok(())
+        Ok(true)
       })
       .unwrap();
 
@@ -1113,11 +1117,44 @@ mod tests {
     redraw
       .for_each_batch(|batch| {
         names.push(batch.name.to_owned());
-        Ok(())
+        Ok(true)
       })
       .unwrap();
 
     assert_eq!(names, vec!["grid_line", "flush"]);
+  }
+
+  #[test]
+  fn redraw_notification_stops_when_batch_callback_returns_false() {
+    let bytes = redraw_notification(vec![
+      Value::from(vec![
+        Value::from("grid_line"),
+        Value::from(vec![Value::from(1)]),
+      ]),
+      Value::from(vec![Value::from("flush")]),
+    ]);
+    let mut redraw = read_redraw_notification(&bytes);
+    let mut names = Vec::new();
+
+    redraw
+      .for_each_batch(|batch| {
+        names.push(batch.name.to_owned());
+        Ok(false)
+      })
+      .unwrap();
+
+    assert_eq!(names, vec!["grid_line"]);
+    assert_eq!(redraw.batch_count(), 1);
+
+    redraw
+      .for_each_batch(|batch| {
+        names.push(batch.name.to_owned());
+        Ok(true)
+      })
+      .unwrap();
+
+    assert_eq!(names, vec!["grid_line", "flush"]);
+    assert_eq!(redraw.batch_count(), 0);
   }
 
   #[test]
@@ -1137,7 +1174,7 @@ mod tests {
           payloads.push(read_value(&mut input)?);
           assert!(input.is_empty());
         }
-        Ok(())
+        Ok(true)
       })
       .unwrap();
 
@@ -1165,7 +1202,7 @@ mod tests {
         assert_eq!(batch.args.read_raw_value()?.as_i64()?, -1);
         assert_eq!(batch.args.read_raw_value()?.as_u64()?, 2);
         assert!(batch.args.read_raw_value()?.as_bool()?);
-        Ok(())
+        Ok(true)
       })
       .unwrap();
   }
@@ -1291,7 +1328,7 @@ mod tests {
             })
           })?;
         }
-        Ok(())
+        Ok(true)
       })
       .unwrap();
   }

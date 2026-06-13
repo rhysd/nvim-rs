@@ -788,7 +788,7 @@ mod decode_state_tests {
         .for_each_batch(|batch| {
           assert_eq!(batch.name, "flush");
           assert!(batch.args.is_empty());
-          Ok(())
+          Ok(true)
         })
         .unwrap();
 
