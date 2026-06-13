@@ -181,9 +181,24 @@ pub struct RawMsgpack<'de> {
 }
 
 impl<'de> RawMsgpack<'de> {
-  #[must_use]
   pub fn as_bytes(&self) -> &'de [u8] {
     self.bytes
+  }
+
+  pub fn as_str(&self) -> RedrawDecodeResult<&'de str> {
+    Ok(decode::read_str_from_slice(self.bytes)?.0)
+  }
+
+  pub fn as_i64(&self) -> RedrawDecodeResult<i64> {
+    Ok(decode::read_int::<i64, _>(&mut Bytes::new(self.bytes))?)
+  }
+
+  pub fn as_u64(&self) -> RedrawDecodeResult<u64> {
+    Ok(decode::read_int::<u64, _>(&mut Bytes::new(self.bytes))?)
+  }
+
+  pub fn as_bool(&self) -> RedrawDecodeResult<bool> {
+    Ok(decode::read_bool(&mut Bytes::new(self.bytes))?)
   }
 }
 
@@ -946,10 +961,10 @@ mod tests {
           assert_eq!(batch.args.remaining(), 1);
           while !batch.args.is_empty() {
             batch.args.read_array(|args| {
-            assert_eq!(args.read_u64()?, 1);
-            assert_eq!(args.read_i64()?, -2);
-            assert!(args.read_bool()?);
-            Ok(())
+              assert_eq!(args.read_u64()?, 1);
+              assert_eq!(args.read_i64()?, -2);
+              assert!(args.read_bool()?);
+              Ok(())
             })?;
           }
         } else {
@@ -1025,6 +1040,29 @@ mod tests {
   }
 
   #[test]
+  fn raw_msgpack_reads_scalar_values() {
+    let bytes = redraw_notification(vec![Value::from(vec![
+      Value::from("values"),
+      Value::from("text"),
+      Value::from(-1),
+      Value::from(2),
+      Value::from(true),
+    ])]);
+    let mut redraw = read_redraw_notification(&bytes);
+
+    redraw
+      .for_each_batch(|batch| {
+        assert_eq!(batch.name, "values");
+        assert_eq!(batch.args.read_raw_value()?.as_str()?, "text");
+        assert_eq!(batch.args.read_raw_value()?.as_i64()?, -1);
+        assert_eq!(batch.args.read_raw_value()?.as_u64()?, 2);
+        assert!(batch.args.read_raw_value()?.as_bool()?);
+        Ok(())
+      })
+      .unwrap();
+  }
+
+  #[test]
   fn array_reader_reads_maps_as_raw_pairs() {
     let bytes = redraw_notification(vec![Value::from(vec![
       Value::from("option_set"),
@@ -1036,12 +1074,12 @@ mod tests {
       .for_each_batch(|batch| {
         while !batch.args.is_empty() {
           batch.args.read_array(|args| {
-          args.read_map(|map| {
-            let (key, value) = map.read_value_pair()?;
-            assert_eq!(key, Value::from("k"));
-            assert_eq!(value, Value::from(1));
-            Ok(())
-          })
+            args.read_map(|map| {
+              let (key, value) = map.read_value_pair()?;
+              assert_eq!(key, Value::from("k"));
+              assert_eq!(value, Value::from(1));
+              Ok(())
+            })
           })?;
         }
         Ok(())

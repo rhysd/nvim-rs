@@ -75,13 +75,13 @@ fn consume_redraw_arrays_for_bench(
     black_box(batch.name);
     while !batch.args.is_empty() {
       batch.args.read_array(|args| {
-      while !args.is_empty() {
-        let value = args.read_raw_value()?;
-        value_count += 1;
-        black_box(value.as_bytes());
-      }
+        while !args.is_empty() {
+          let value = args.read_raw_value()?;
+          value_count += 1;
+          black_box(value.as_bytes());
+        }
 
-      Ok(())
+        Ok(())
       })?;
     }
     Ok(())
