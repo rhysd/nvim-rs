@@ -786,8 +786,8 @@ mod decode_state_tests {
       assert_eq!(redraw.batch_count(), 1);
       redraw
         .for_each_batch(|batch| {
-          assert_eq!(batch.name(), "flush");
-          assert!(batch.is_empty());
+          assert_eq!(batch.name, "flush");
+          assert!(batch.args.is_empty());
           Ok(())
         })
         .unwrap();

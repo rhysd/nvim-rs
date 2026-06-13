@@ -260,7 +260,7 @@ impl<'de> RedrawNotification<'de> {
       let mut batch = RedrawBatch { name, args };
 
       f(&mut batch)?;
-      batch.skip_remaining()?;
+      batch.args.skip_remaining()?;
       self.params.reader.position = batch.args.reader.position;
     }
 
@@ -271,51 +271,8 @@ impl<'de> RedrawNotification<'de> {
 /// One redraw event batch, e.g. `["grid_line", [...], ...]`.
 #[derive(Debug, Clone)]
 pub struct RedrawBatch<'de> {
-  name: &'de str,
-  args: ArrayReader<'de>,
-}
-
-impl<'de> RedrawBatch<'de> {
-  #[must_use]
-  pub fn name(&self) -> &'de str {
-    self.name
-  }
-
-  #[must_use]
-  pub fn arg_count(&self) -> u32 {
-    self.args.remaining()
-  }
-
-  #[must_use]
-  pub fn is_empty(&self) -> bool {
-    self.args.is_empty()
-  }
-
-  pub fn for_each_args<F>(&mut self, mut f: F) -> RedrawDecodeResult<()>
-  where
-    F: FnMut(&mut ArrayReader<'de>) -> RedrawDecodeResult<()>,
-  {
-    while !self.args.is_empty() {
-      self.args.read_array(|args| f(args))?;
-    }
-
-    Ok(())
-  }
-
-  pub fn for_each_payload<F>(&mut self, mut f: F) -> RedrawDecodeResult<()>
-  where
-    F: FnMut(RawMsgpack<'de>) -> RedrawDecodeResult<()>,
-  {
-    while !self.args.is_empty() {
-      f(self.args.read_raw_value()?)?;
-    }
-
-    Ok(())
-  }
-
-  pub fn skip_remaining(&mut self) -> RedrawDecodeResult<()> {
-    self.args.skip_remaining()
-  }
+  pub name: &'de str,
+  pub args: ArrayReader<'de>,
 }
 
 /// A borrowed reader over msgpack array elements.
@@ -983,18 +940,20 @@ mod tests {
 
     redraw
       .for_each_batch(|batch| {
-        seen.push(batch.name().to_owned());
+        seen.push(batch.name.to_owned());
 
-        if batch.name() == "grid_line" {
-          assert_eq!(batch.arg_count(), 1);
-          batch.for_each_args(|args| {
+        if batch.name == "grid_line" {
+          assert_eq!(batch.args.remaining(), 1);
+          while !batch.args.is_empty() {
+            batch.args.read_array(|args| {
             assert_eq!(args.read_u64()?, 1);
             assert_eq!(args.read_i64()?, -2);
             assert!(args.read_bool()?);
             Ok(())
-          })?;
+            })?;
+          }
         } else {
-          assert!(batch.is_empty());
+          assert!(batch.args.is_empty());
         }
 
         Ok(())
@@ -1030,7 +989,7 @@ mod tests {
 
     redraw
       .for_each_batch(|batch| {
-        names.push(batch.name().to_owned());
+        names.push(batch.name.to_owned());
         Ok(())
       })
       .unwrap();
@@ -1049,12 +1008,13 @@ mod tests {
 
     redraw
       .for_each_batch(|batch| {
-        batch.for_each_payload(|payload| {
+        while !batch.args.is_empty() {
+          let payload = batch.args.read_raw_value()?;
           let mut input = payload.as_bytes();
           payloads.push(read_value(&mut input)?);
           assert!(input.is_empty());
-          Ok(())
-        })
+        }
+        Ok(())
       })
       .unwrap();
 
@@ -1074,14 +1034,17 @@ mod tests {
 
     redraw
       .for_each_batch(|batch| {
-        batch.for_each_args(|args| {
+        while !batch.args.is_empty() {
+          batch.args.read_array(|args| {
           args.read_map(|map| {
             let (key, value) = map.read_value_pair()?;
             assert_eq!(key, Value::from("k"));
             assert_eq!(value, Value::from(1));
             Ok(())
           })
-        })
+          })?;
+        }
+        Ok(())
       })
       .unwrap();
   }

@@ -54,12 +54,13 @@ fn consume_redraw_for_bench(
   let mut payload_count = 0;
 
   redraw.for_each_batch(|batch| {
-    black_box(batch.name());
-    batch.for_each_payload(|payload| {
+    black_box(batch.name);
+    while !batch.args.is_empty() {
+      let payload = batch.args.read_raw_value()?;
       payload_count += 1;
       black_box(payload.as_bytes());
-      Ok(())
-    })
+    }
+    Ok(())
   })?;
 
   Ok(payload_count)
@@ -71,8 +72,9 @@ fn consume_redraw_arrays_for_bench(
   let mut value_count = 0;
 
   redraw.for_each_batch(|batch| {
-    black_box(batch.name());
-    batch.for_each_args(|args| {
+    black_box(batch.name);
+    while !batch.args.is_empty() {
+      batch.args.read_array(|args| {
       while !args.is_empty() {
         let value = args.read_raw_value()?;
         value_count += 1;
@@ -80,7 +82,9 @@ fn consume_redraw_arrays_for_bench(
       }
 
       Ok(())
-    })
+      })?;
+    }
+    Ok(())
   })?;
 
   Ok(value_count)
