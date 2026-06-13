@@ -977,6 +977,17 @@ mod tests {
     ]);
     assert!(RedrawFrameInfo::probe(&request).unwrap().is_none());
 
+    let non_integer_message_type = rpc_message(vec![
+      Value::from("notification"),
+      Value::from("redraw"),
+      Value::from(Vec::<Value>::new()),
+    ]);
+    assert!(
+      RedrawFrameInfo::probe(&non_integer_message_type)
+        .unwrap()
+        .is_none()
+    );
+
     let response = rpc_message(vec![
       Value::from(1),
       Value::from(7),
@@ -991,6 +1002,17 @@ mod tests {
       Value::from(Vec::<Value>::new()),
     ]);
     assert!(RedrawFrameInfo::probe(&non_redraw).unwrap().is_none());
+
+    let non_string_method = rpc_message(vec![
+      Value::from(2),
+      Value::from(7),
+      Value::from(Vec::<Value>::new()),
+    ]);
+    assert!(
+      RedrawFrameInfo::probe(&non_string_method)
+        .unwrap()
+        .is_none()
+    );
 
     let method_only = rpc_message(vec![Value::from(2), Value::from("redraw")]);
     assert!(RedrawFrameInfo::probe(&method_only).unwrap().is_none());
@@ -1031,11 +1053,29 @@ mod tests {
     assert_eq!(info.consumed(), redraw.len());
     let frame = RedrawFrame::from_slice(&redraw).unwrap();
     assert_eq!(frame.as_bytes(), redraw.as_slice());
+    assert_incomplete(RedrawFrameInfo::probe(&[]));
     assert!(matches!(
       RedrawFrameInfo::probe(&incomplete_redraw_prefix),
       Err(RedrawDecodeError::Incomplete)
     ));
     assert!(RedrawFrameInfo::probe(&request).unwrap().is_none());
+  }
+
+  #[test]
+  fn redraw_frame_probe_counts_extra_outer_fields() {
+    let redraw = rpc_message(vec![
+      Value::from(2),
+      Value::from("redraw"),
+      Value::from(vec![Value::from(vec![Value::from("flush")])]),
+      Value::from("extra"),
+    ]);
+    let mut bytes = redraw.clone();
+    bytes.extend_from_slice(&encode_value(Value::from("tail")));
+
+    let info = RedrawFrameInfo::probe(&bytes)
+      .unwrap()
+      .expect("redraw frame");
+    assert_eq!(info.consumed(), redraw.len());
   }
 
   #[test]

@@ -795,6 +795,22 @@ mod decode_state_tests {
     decoder.consume(consumed);
     assert_eq!(decoder.rest(), msg_bytes.as_slice());
   }
+
+  #[test]
+  fn decode_state_take_rest_compacts_consumed_prefix() {
+    let msg_1 = encoded(request(1, "test_method"));
+    let msg_2 = encoded(request(2, "test_method_2"));
+
+    let mut rest = msg_1.clone();
+    rest.extend_from_slice(&msg_2);
+    let mut decoder = DecodeState::with_rest(rest);
+
+    decoder.consume(msg_1.len());
+    let bytes = decoder.take_rest(msg_2.len());
+
+    assert_eq!(&bytes[..], msg_2.as_slice());
+    assert!(!decoder.has_rest());
+  }
 }
 
 #[cfg(all(test, feature = "use_tokio"))]
