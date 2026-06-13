@@ -65,6 +65,48 @@ fn consume_redraw_for_bench(
   Ok(payload_count)
 }
 
+fn consume_redraw_arrays_for_bench(
+  mut redraw: RedrawNotification<'_>,
+) -> RedrawDecodeResult<usize> {
+  let mut value_count = 0;
+
+  redraw.for_each_batch(|batch| {
+    black_box(batch.name());
+    batch.for_each_args(|args| {
+      while !args.is_empty() {
+        let value = args.read_raw_value()?;
+        value_count += 1;
+        black_box(value.as_bytes());
+      }
+
+      Ok(())
+    })
+  })?;
+
+  Ok(value_count)
+}
+
+fn parse_redraw_arrays(bytes: &[u8]) -> usize {
+  let frame = RedrawFrame::try_read(bytes).unwrap().expect("redraw frame");
+  consume_redraw_arrays_for_bench(frame.into()).unwrap()
+}
+
+fn parse_redraw_arrays_batch(bytes: &[u8], count: usize) -> usize {
+  let mut rest = bytes;
+  let mut parsed = 0;
+  let mut value_count = 0;
+
+  while parsed < count {
+    let frame = RedrawFrame::try_read(rest).unwrap().expect("redraw frame");
+    let consumed = frame.consumed();
+    value_count += consume_redraw_arrays_for_bench(frame.into()).unwrap();
+    rest = &rest[consumed..];
+    parsed += 1;
+  }
+
+  value_count
+}
+
 fn read_current_path_from_reader(
   decoder: &mut DecodeState,
   bytes: Vec<u8>,
@@ -343,9 +385,58 @@ fn bench_decode(c: &mut Criterion) {
   group.finish();
 }
 
+fn bench_redraw_array_reader(c: &mut Criterion) {
+  let captured_ui_init = nvim_ui_fixture(NVIM_UI_FIXTURE);
+  let captured_scroll_ui = nvim_ui_fixture(NVIM_UI_SCROLL_FIXTURE);
+
+  let mut group = c.benchmark_group("rpc/redraw_array_reader");
+
+  for input in selected_ui_inputs(&captured_ui_init) {
+    group.throughput(Throughput::Bytes(input.bytes.len() as u64));
+    group.bench_with_input(
+      BenchmarkId::new("single_nvim_ui_init", &input.name),
+      &input.bytes,
+      |b, bytes| b.iter(|| black_box(parse_redraw_arrays(black_box(bytes)))),
+    );
+  }
+
+  let ui_batch_count = captured_ui_init.len();
+  let ui_batch = captured_ui_init
+    .iter()
+    .flat_map(|msg| msg.bytes.iter().copied())
+    .collect::<Vec<_>>();
+  group.throughput(Throughput::Bytes(ui_batch.len() as u64));
+  group.bench_function("batch_nvim_ui_init", |b| {
+    b.iter(|| {
+      black_box(parse_redraw_arrays_batch(
+        black_box(&ui_batch),
+        ui_batch_count,
+      ))
+    });
+  });
+
+  let scroll_ui_batch_count = captured_scroll_ui.len();
+  let scroll_ui_batch = captured_scroll_ui
+    .iter()
+    .flat_map(|msg| msg.bytes.iter().copied())
+    .collect::<Vec<_>>();
+  group.throughput(Throughput::Bytes(scroll_ui_batch.len() as u64));
+  group.bench_function("batch_nvim_ui_scroll", |b| {
+    b.iter(|| {
+      black_box(parse_redraw_arrays_batch(
+        black_box(&scroll_ui_batch),
+        scroll_ui_batch_count,
+      ))
+    });
+  });
+
+  group.finish();
+}
+
 fn rpc(c: &mut Criterion) {
   bench_encode(c);
   bench_decode(c);
+  bench_redraw_array_reader(c);
 }
 
 criterion_group!(name = benches; config = Criterion::default().without_plots(); targets = rpc);
