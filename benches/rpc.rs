@@ -12,7 +12,9 @@ use navy_nvim_rs::rpc::{
     DecodeState, EncodeState, RpcMessage, encode_nvim_input_with_state,
     encode_with_state,
   },
-  redraw::{RedrawDecodeResult, RedrawFrame, RedrawNotification},
+  redraw::{
+    RedrawDecodeError, RedrawDecodeResult, RedrawFrame, RedrawNotification,
+  },
 };
 use rmpv::{Value, decode::read_value};
 use std::{collections::HashSet, hint::black_box, sync::Arc};
@@ -90,9 +92,13 @@ fn consume_redraw_arrays_for_bench(
   Ok(value_count)
 }
 
+fn redraw_frame(bytes: &[u8]) -> RedrawFrame {
+  RedrawFrame::probe(bytes).unwrap().expect("redraw frame")
+}
+
 fn parse_redraw_arrays(bytes: &[u8]) -> usize {
-  let frame = RedrawFrame::try_read(bytes).unwrap().expect("redraw frame");
-  consume_redraw_arrays_for_bench(frame.into()).unwrap()
+  let frame = redraw_frame(bytes);
+  consume_redraw_arrays_for_bench(frame.notification().unwrap()).unwrap()
 }
 
 fn parse_redraw_arrays_batch(bytes: &[u8], count: usize) -> usize {
@@ -101,9 +107,10 @@ fn parse_redraw_arrays_batch(bytes: &[u8], count: usize) -> usize {
   let mut value_count = 0;
 
   while parsed < count {
-    let frame = RedrawFrame::try_read(rest).unwrap().expect("redraw frame");
+    let frame = redraw_frame(rest);
     let consumed = frame.consumed();
-    value_count += consume_redraw_arrays_for_bench(frame.into()).unwrap();
+    value_count +=
+      consume_redraw_arrays_for_bench(frame.notification().unwrap()).unwrap();
     rest = &rest[consumed..];
     parsed += 1;
   }
@@ -124,14 +131,21 @@ fn read_current_path_from_reader(
 
     while decoded < count {
       while decoder.has_rest() {
-        if let Some(frame) = RedrawFrame::try_read(decoder.rest()).unwrap() {
-          let consumed = frame.consumed();
-          payload_count += consume_redraw_for_bench(frame.into()).unwrap();
-          decoder.consume(consumed);
-        } else if let Some(msg) = decoder.try_decode_message().unwrap() {
-          black_box(msg);
-        } else {
-          break;
+        match RedrawFrame::probe(decoder.rest()) {
+          Ok(Some(frame)) => {
+            decoder.consume(frame.consumed());
+            payload_count +=
+              consume_redraw_for_bench(frame.notification().unwrap()).unwrap();
+          }
+          Ok(None) => {
+            if let Some(msg) = decoder.try_decode_message().unwrap() {
+              black_box(msg);
+            } else {
+              break;
+            }
+          }
+          Err(RedrawDecodeError::Incomplete) => break,
+          Err(err) => panic!("redraw decode error: {err:?}"),
         }
 
         decoded += 1;

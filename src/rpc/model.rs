@@ -108,16 +108,6 @@ impl DecodeState {
     }
   }
 
-  pub fn take(&mut self, size: usize) -> &[u8] {
-    let start = self.start;
-    let end = start
-      .checked_add(size)
-      .expect("decode buffer cursor overflow");
-    assert!(end <= self.rest.len(), "decode buffer take out of bounds");
-    self.start = end;
-    &self.rest[start..end]
-  }
-
   pub async fn read_next_chunk<R>(
     &mut self,
     reader: &mut R,
@@ -610,6 +600,10 @@ mod decode_state_tests {
     bytes
   }
 
+  fn redraw_frame(bytes: &[u8]) -> RedrawFrame {
+    RedrawFrame::probe(bytes).unwrap().expect("redraw frame")
+  }
+
   fn decode_next_from_state(
     decoder: &mut DecodeState,
     reader: &mut Cursor<Vec<u8>>,
@@ -775,17 +769,6 @@ mod decode_state_tests {
   }
 
   #[test]
-  fn decode_state_takes_bytes_from_rest() {
-    let mut decoder = DecodeState::with_rest(b"abcdef".to_vec());
-
-    assert_eq!(decoder.take(2), b"ab");
-    assert_eq!(decoder.rest(), b"cdef");
-    assert_eq!(decoder.take(4), b"cdef");
-    assert!(!decoder.has_rest());
-    assert!(decoder.into_rest().is_empty());
-  }
-
-  #[test]
   fn decode_state_reads_redraw_frame_without_owned_message() {
     let redraw = encoded_value(Value::from(vec![
       Value::from(2),
@@ -800,9 +783,9 @@ mod decode_state_tests {
     let mut decoder = DecodeState::with_rest(rest);
 
     let consumed = {
-      let frame = RedrawFrame::try_read(decoder.rest()).unwrap().unwrap();
+      let frame = redraw_frame(decoder.rest());
       let consumed = frame.consumed();
-      let mut redraw: RedrawNotification<'_> = frame.into();
+      let mut redraw: RedrawNotification<'_> = frame.notification().unwrap();
 
       assert_eq!(redraw.batch_count(), 1);
       redraw

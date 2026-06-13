@@ -27,7 +27,7 @@ use crate::{
     handler::Handler,
     model,
     model::{IntoVal, RpcMessage},
-    redraw::{RedrawFrame, RedrawFrameStatus},
+    redraw::{RedrawDecodeError, RedrawFrame},
   },
   uioptions::UiAttachOptions,
 };
@@ -51,10 +51,23 @@ type ResponseResult = Result<Result<Value, Value>, Arc<DecodeError>>;
 
 type Queue = Arc<Mutex<Vec<(u64, oneshot::Sender<ResponseResult>)>>>;
 
-#[derive(Debug)]
 enum HandlerMessage {
   RpcMessage(RpcMessage),
-  RedrawPayload(Vec<u8>),
+  RedrawPayload(RedrawFrame),
+}
+
+impl std::fmt::Debug for HandlerMessage {
+  fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::RpcMessage(msg) => {
+        fmt.debug_tuple("RpcMessage").field(msg).finish()
+      }
+      Self::RedrawPayload(frame) => fmt
+        .debug_struct("RedrawPayload")
+        .field("len", &frame.consumed())
+        .finish(),
+    }
+  }
 }
 
 /// An active Neovim session.
@@ -328,9 +341,9 @@ where
       };
 
       match msg {
-        HandlerMessage::RedrawPayload(bytes) => {
-          let frame = RedrawFrame::read(&bytes)?;
-          handler.handle_redraw(frame.into())?;
+        HandlerMessage::RedrawPayload(frame) => {
+          let redraw = frame.notification()?;
+          handler.handle_redraw(redraw)?;
         }
         HandlerMessage::RpcMessage(msg) => match msg {
           RpcMessage::RpcRequest {
@@ -431,19 +444,20 @@ where
   {
     loop {
       if decoder.has_rest() {
-        match RedrawFrame::probe(decoder.rest())? {
-          RedrawFrameStatus::Complete { consumed } => {
-            let bytes = decoder.take(consumed).to_vec();
-            return Ok(HandlerMessage::RedrawPayload(bytes));
+        match RedrawFrame::probe(decoder.rest()) {
+          Ok(Some(frame)) => {
+            decoder.consume(frame.consumed());
+            return Ok(HandlerMessage::RedrawPayload(frame));
           }
-          RedrawFrameStatus::Incomplete => {}
-          RedrawFrameStatus::NotRedraw => {
+          Ok(None) => {
             if let Some(msg) =
               decoder.try_decode_message().map_err(|err| *err)?
             {
               return Ok(HandlerMessage::RpcMessage(msg));
             }
           }
+          Err(RedrawDecodeError::Incomplete) => {}
+          Err(err) => return Err(err.into()),
         }
       }
 
@@ -591,7 +605,9 @@ mod tests {
     .unwrap();
 
     match msg {
-      HandlerMessage::RedrawPayload(bytes) => assert_eq!(bytes, redraw),
+      HandlerMessage::RedrawPayload(frame) => {
+        assert_eq!(frame.as_bytes(), redraw.as_slice());
+      }
       msg => panic!("unexpected message: {msg:?}"),
     }
   }
@@ -605,8 +621,11 @@ mod tests {
     };
 
     block_on(async {
+      let frame = RedrawFrame::probe(&redraw_bytes())
+        .unwrap()
+        .expect("redraw frame");
       sender
-        .send(HandlerMessage::RedrawPayload(redraw_bytes()))
+        .send(HandlerMessage::RedrawPayload(frame))
         .await
         .unwrap();
       drop(sender);

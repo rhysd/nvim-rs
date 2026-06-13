@@ -123,84 +123,97 @@ impl From<rmpv::decode::Error> for RedrawDecodeError {
   }
 }
 
-/// A complete borrowed `redraw` notification frame.
-pub struct RedrawFrame<'de> {
-  notification: RedrawNotification<'de>,
-  consumed: usize,
+/// A complete owned `redraw` notification frame.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RedrawFrame {
+  bytes: Vec<u8>,
+  params_offset: usize,
+  params_len: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RedrawFrameStatus {
-  Complete { consumed: usize },
-  Incomplete,
-  NotRedraw,
+impl Debug for RedrawFrame {
+  fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fmt
+      .debug_struct("RedrawFrame")
+      .field("len", &self.bytes.len())
+      .finish()
+  }
 }
 
-impl<'de> RedrawFrame<'de> {
-  pub fn probe(
-    bytes: &'de [u8],
-  ) -> Result<RedrawFrameStatus, RedrawDecodeError> {
-    match is_redraw_method(bytes) {
-      Ok(true) => {}
-      Ok(false) => return Ok(RedrawFrameStatus::NotRedraw),
-      Err(RedrawDecodeError::Incomplete) => {
-        return Ok(RedrawFrameStatus::Incomplete);
+impl RedrawFrame {
+  pub fn probe(bytes: &[u8]) -> RedrawDecodeResult<Option<Self>> {
+    let mut reader = MsgpackReader::new(bytes);
+    let outer_len = match reader.read_rmp(decode::read_array_len) {
+      Ok(len) => len,
+      Err(ValueReadError::TypeMismatch(_)) => return Ok(None),
+      Err(err) => return Err(err.into()),
+    };
+
+    if outer_len < 3 {
+      return Ok(None);
+    }
+
+    let msg_type = match reader.read_rmp(decode::read_int::<u64, _>) {
+      Ok(msg_type) => msg_type,
+      Err(NumValueReadError::TypeMismatch(_))
+      | Err(NumValueReadError::OutOfRange) => {
+        return Ok(None);
       }
+      Err(err) => {
+        return Err(err.into());
+      }
+    };
+
+    if msg_type != 2 {
+      return Ok(None);
+    }
+
+    match reader.read_str_eq("redraw") {
+      Ok(true) => {}
+      Ok(false) => return Ok(None),
       Err(err) => return Err(err),
     }
 
-    match Self::read(bytes) {
-      Ok(frame) => Ok(RedrawFrameStatus::Complete {
-        consumed: frame.consumed,
-      }),
-      Err(RedrawDecodeError::Incomplete) => Ok(RedrawFrameStatus::Incomplete),
-      Err(err) => Err(err),
-    }
-  }
+    let params_len = match reader.read_rmp(decode::read_array_len) {
+      Ok(len) => len,
+      Err(ValueReadError::TypeMismatch(_)) => {
+        return Ok(None);
+      }
+      Err(err) => {
+        return Err(err.into());
+      }
+    };
 
-  /// Try to read a complete msgpack-rpc `redraw` notification frame.
-  ///
-  /// `Ok(None)` means either the next frame is not a `redraw` notification or
-  /// the frame is not complete yet.
-  pub fn try_read(bytes: &'de [u8]) -> Result<Option<Self>, RedrawDecodeError> {
-    match Self::probe(bytes)? {
-      RedrawFrameStatus::Complete { .. } => Self::read(bytes).map(Some),
-      RedrawFrameStatus::Incomplete | RedrawFrameStatus::NotRedraw => Ok(None),
-    }
-  }
-
-  pub(crate) fn read(bytes: &'de [u8]) -> Result<Self, RedrawDecodeError> {
-    let mut reader = MsgpackReader::new(bytes);
-    let outer_len = reader.read_array_len()?;
-
-    // `is_redraw_method` already verified these fields. Read them again so this
-    // function can build a borrowed params reader from the same cursor.
-    let _msg_type = reader.read_u64()?;
-    let _method = reader.read_str()?;
-
-    let params = reader.read_array_reader()?;
-    let mut params_for_skip = params.clone();
-    params_for_skip.skip_remaining()?;
-    reader.position = params_for_skip.reader.position;
+    let params_offset = reader.position;
+    reader.skip_values(params_len)?;
 
     for _ in 3..outer_len {
       reader.skip_value()?;
     }
 
-    Ok(Self {
-      notification: RedrawNotification::new(params),
-      consumed: reader.position,
-    })
+    Ok(Some(Self {
+      bytes: bytes[..reader.position].to_vec(),
+      params_offset,
+      params_len,
+    }))
   }
 
   pub fn consumed(&self) -> usize {
-    self.consumed
+    self.bytes.len()
   }
-}
 
-impl<'de> From<RedrawFrame<'de>> for RedrawNotification<'de> {
-  fn from(frame: RedrawFrame<'de>) -> Self {
-    frame.notification
+  pub fn as_bytes(&self) -> &[u8] {
+    &self.bytes
+  }
+
+  pub fn notification(&self) -> RedrawDecodeResult<RedrawNotification<'_>> {
+    Ok(RedrawNotification::new(ArrayReader {
+      reader: MsgpackReader {
+        input: &self.bytes,
+        position: self.params_offset,
+      },
+      remaining: self.params_len,
+    }))
   }
 }
 
@@ -247,6 +260,7 @@ impl<'de> RawMsgpack<'de> {
 ///
 /// `RedrawDecodeError::Incomplete` means the buffer is incomplete before the
 /// method and params array header can be checked.
+#[cfg(test)]
 fn is_redraw_method(bytes: &[u8]) -> RedrawDecodeResult<bool> {
   let mut reader = MsgpackReader::new(bytes);
   let outer_len = match reader.read_rmp(decode::read_array_len) {
@@ -1066,50 +1080,50 @@ mod tests {
       Value::from(Vec::<Value>::new()),
     ]);
 
-    assert_eq!(
-      RedrawFrame::probe(&redraw).unwrap(),
-      RedrawFrameStatus::Complete {
-        consumed: redraw.len()
-      }
-    );
-    assert_eq!(
-      RedrawFrame::probe(&incomplete_redraw_prefix).unwrap(),
-      RedrawFrameStatus::Incomplete
-    );
-    assert_eq!(
-      RedrawFrame::probe(&request).unwrap(),
-      RedrawFrameStatus::NotRedraw
-    );
+    let frame = RedrawFrame::probe(&redraw).unwrap().expect("redraw frame");
+    assert_eq!(frame.consumed(), redraw.len());
+    assert_eq!(frame.as_bytes(), redraw.as_slice());
+    assert!(matches!(
+      RedrawFrame::probe(&incomplete_redraw_prefix),
+      Err(RedrawDecodeError::Incomplete)
+    ));
+    assert!(RedrawFrame::probe(&request).unwrap().is_none());
   }
 
   #[test]
-  fn try_read_redraw_frame_waits_for_complete_payload() {
-    let mut bytes =
-      redraw_notification(vec![Value::from(vec![Value::from("flush")])]);
-    bytes.pop();
+  fn redraw_frame_notification_reads_params_from_probe_offset() {
+    let redraw = redraw_notification(vec![
+      Value::from(vec![
+        Value::from("grid_resize"),
+        Value::from(vec![Value::from(1), Value::from(80), Value::from(24)]),
+      ]),
+      Value::from(vec![Value::from("flush")]),
+    ]);
+    let frame = RedrawFrame::probe(&redraw).unwrap().expect("redraw frame");
+    let mut notification = frame.notification().unwrap();
+    let mut seen = Vec::new();
 
-    assert!(RedrawFrame::try_read(&bytes).unwrap().is_none());
-  }
+    assert_eq!(notification.batch_count(), 2);
+    notification
+      .for_each_batch(|batch| {
+        seen.push(batch.name.to_owned());
 
-  #[test]
-  fn try_read_redraw_frame_waits_for_complete_redraw_prefix() {
-    let missing_params_header = [
-      Marker::FixArray(3).to_u8(),
-      2,
-      Marker::FixStr(6).to_u8(),
-      b'r',
-      b'e',
-      b'd',
-      b'r',
-      b'a',
-      b'w',
-    ];
+        if batch.name == "grid_resize" {
+          batch.args.read_array(|args| {
+            assert_eq!(args.read_u64()?, 1);
+            assert_eq!(args.read_u64()?, 80);
+            assert_eq!(args.read_u64()?, 24);
+            Ok(true)
+          })?;
+        } else {
+          assert!(batch.args.is_empty());
+        }
 
-    assert!(
-      RedrawFrame::try_read(&missing_params_header)
-        .unwrap()
-        .is_none()
-    );
+        Ok(true)
+      })
+      .unwrap();
+
+    assert_eq!(seen, vec!["grid_resize", "flush"]);
   }
 
   #[test]
