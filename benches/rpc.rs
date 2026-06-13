@@ -10,7 +10,7 @@ use futures::{
 use navy_nvim_rs::rpc::{
   model::{
     DecodeState, EncodeState, RpcMessage, encode_nvim_input_with_state,
-    encode_with_state,
+    encode_sync, encode_with_state,
   },
   redraw::{
     RedrawDecodeError, RedrawDecodeResult, RedrawFrame, RedrawNotification,
@@ -50,22 +50,39 @@ fn encode_request_message() -> RpcMessage {
   }
 }
 
-fn consume_redraw_for_bench(
-  mut redraw: RedrawNotification<'_>,
-) -> RedrawDecodeResult<usize> {
-  let mut payload_count = 0;
+fn encode_message(msg: RpcMessage) -> Vec<u8> {
+  let mut bytes = Vec::new();
+  encode_sync(&mut bytes, msg).unwrap();
+  bytes
+}
 
-  redraw.for_each_batch(|batch| {
-    black_box(batch.name);
-    while !batch.args.is_empty() {
-      let payload = batch.args.read_raw_value()?;
-      payload_count += 1;
-      black_box(payload.as_bytes());
-    }
-    Ok(true)
-  })?;
+fn non_redraw_rpc_batch(count: usize) -> Vec<u8> {
+  let mut bytes = Vec::new();
 
-  Ok(payload_count)
+  for index in 0..count {
+    let msg = if index % 2 == 0 {
+      RpcMessage::RpcResponse {
+        msgid: index as u64,
+        error: Value::Nil,
+        result: Value::from(index as u64),
+      }
+    } else {
+      RpcMessage::RpcNotification {
+        method: "nvim_buf_lines_event".to_owned(),
+        params: vec![
+          Value::from(1),
+          Value::from(0),
+          Value::from(1),
+          Value::from(vec![Value::from("line")]),
+          Value::from(false),
+        ],
+      }
+    };
+
+    bytes.extend_from_slice(&encode_message(msg));
+  }
+
+  bytes
 }
 
 fn consume_redraw_arrays_for_bench(
@@ -118,7 +135,7 @@ fn parse_redraw_arrays_batch(bytes: &[u8], count: usize) -> usize {
   value_count
 }
 
-fn read_current_path_from_reader(
+fn decode_redraw_frames_from_reader(
   decoder: &mut DecodeState,
   bytes: Vec<u8>,
   count: usize,
@@ -127,15 +144,15 @@ fn read_current_path_from_reader(
 
   block_on(async {
     let mut decoded = 0;
-    let mut payload_count = 0;
+    let mut frame_bytes = 0;
 
     while decoded < count {
       while decoder.has_rest() {
         match RedrawFrame::probe(decoder.rest()) {
           Ok(Some(frame)) => {
-            decoder.consume(frame.consumed());
-            payload_count +=
-              consume_redraw_for_bench(frame.notification().unwrap()).unwrap();
+            let consumed = frame.consumed();
+            decoder.consume(consumed);
+            frame_bytes += black_box(frame.as_bytes()).len();
           }
           Ok(None) => {
             if let Some(msg) = decoder.try_decode_message().unwrap() {
@@ -150,14 +167,51 @@ fn read_current_path_from_reader(
 
         decoded += 1;
         if decoded == count {
-          return payload_count;
+          return frame_bytes;
         }
       }
 
       decoder.read_next_chunk(&mut reader).await.unwrap();
     }
 
-    payload_count
+    frame_bytes
+  })
+}
+
+fn decode_non_redraw_messages_from_reader(
+  decoder: &mut DecodeState,
+  bytes: Vec<u8>,
+  count: usize,
+) -> usize {
+  let mut reader = Cursor::new(bytes);
+
+  block_on(async {
+    let mut decoded = 0;
+
+    while decoded < count {
+      while decoder.has_rest() {
+        match RedrawFrame::probe(decoder.rest()) {
+          Ok(Some(_)) => panic!("unexpected redraw frame"),
+          Ok(None) => {
+            if let Some(msg) = decoder.try_decode_message().unwrap() {
+              black_box(msg);
+              decoded += 1;
+              if decoded == count {
+                return decoded;
+              }
+            } else {
+              break;
+            }
+          }
+          Err(RedrawDecodeError::Incomplete) => break,
+          Err(err) => panic!("redraw decode error: {err:?}"),
+        }
+      }
+
+      decoder.read_next_chunk(&mut reader).await.unwrap();
+    }
+
+    decoded
   })
 }
 
@@ -346,7 +400,7 @@ fn bench_decode(c: &mut Criterion) {
         b.iter_batched(
           || bytes.clone(),
           |bytes| {
-            black_box(read_current_path_from_reader(&mut decoder, bytes, 1))
+            black_box(decode_redraw_frames_from_reader(&mut decoder, bytes, 1))
           },
           BatchSize::SmallInput,
         );
@@ -365,7 +419,7 @@ fn bench_decode(c: &mut Criterion) {
     b.iter_batched(
       || ui_batch.clone(),
       |bytes| {
-        black_box(read_current_path_from_reader(
+        black_box(decode_redraw_frames_from_reader(
           &mut decoder,
           bytes,
           ui_batch_count,
@@ -386,10 +440,28 @@ fn bench_decode(c: &mut Criterion) {
     b.iter_batched(
       || scroll_ui_batch.clone(),
       |bytes| {
-        black_box(read_current_path_from_reader(
+        black_box(decode_redraw_frames_from_reader(
           &mut decoder,
           bytes,
           scroll_ui_batch_count,
+        ))
+      },
+      BatchSize::SmallInput,
+    );
+  });
+
+  const NON_REDRAW_RPC_BATCH_COUNT: usize = 64;
+  let non_redraw_rpc_batch = non_redraw_rpc_batch(NON_REDRAW_RPC_BATCH_COUNT);
+  group.throughput(Throughput::Bytes(non_redraw_rpc_batch.len() as u64));
+  group.bench_function("non_redraw_rpc_batch", |b| {
+    let mut decoder = DecodeState::new();
+    b.iter_batched(
+      || non_redraw_rpc_batch.clone(),
+      |bytes| {
+        black_box(decode_non_redraw_messages_from_reader(
+          &mut decoder,
+          bytes,
+          NON_REDRAW_RPC_BATCH_COUNT,
         ))
       },
       BatchSize::SmallInput,
