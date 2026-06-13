@@ -679,27 +679,19 @@ impl<'de> MsgpackReader<'de> {
   }
 
   fn skip_bytes(&mut self, len: usize) -> RedrawDecodeResult<()> {
-    self.take(len)?;
+    let Some(end) = self.position.checked_add(len) else {
+      let err = RedrawDecodeError::Invalid("msgpack cursor overflow".into());
+      return Err(err);
+    };
+    if end > self.input.len() {
+      return Err(RedrawDecodeError::Incomplete);
+    }
+    self.position = end;
     Ok(())
   }
 
   fn skip_ext_payload(&mut self, data_len: usize) -> RedrawDecodeResult<()> {
     self.skip_bytes(1 + data_len)
-  }
-
-  fn take(&mut self, len: usize) -> RedrawDecodeResult<&'de [u8]> {
-    let Some(end) = self.position.checked_add(len) else {
-      let err = RedrawDecodeError::Invalid("msgpack cursor overflow".into());
-      return Err(err);
-    };
-
-    if end > self.input.len() {
-      return Err(RedrawDecodeError::Incomplete);
-    }
-
-    let bytes = &self.input[self.position..end];
-    self.position = end;
-    Ok(bytes)
   }
 }
 
@@ -1304,6 +1296,6 @@ mod tests {
       position: usize::MAX,
     };
 
-    assert_reader_error_kind(reader.take(1), ErrorKind::InvalidData);
+    assert_reader_error_kind(reader.skip_bytes(1), ErrorKind::InvalidData);
   }
 }
