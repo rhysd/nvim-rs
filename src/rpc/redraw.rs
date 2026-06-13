@@ -124,23 +124,19 @@ impl From<rmpv::decode::Error> for RedrawDecodeError {
 }
 
 /// A complete owned `redraw` notification frame.
-#[derive(Clone, PartialEq, Eq)]
 pub struct RedrawFrame {
-  bytes: Vec<u8>,
+  bytes: bytes::Bytes,
   params_offset: usize,
   params_len: u32,
 }
 
-impl Debug for RedrawFrame {
-  fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    fmt
-      .debug_struct("RedrawFrame")
-      .field("len", &self.bytes.len())
-      .finish()
-  }
+pub struct RedrawFrameInfo {
+  consumed: usize,
+  params_offset: usize,
+  params_len: u32,
 }
 
-impl RedrawFrame {
+impl RedrawFrameInfo {
   pub fn probe(bytes: &[u8]) -> RedrawDecodeResult<Option<Self>> {
     let mut reader = MsgpackReader::new(bytes);
     let outer_len = match reader.read_rmp(decode::read_array_len) {
@@ -192,10 +188,45 @@ impl RedrawFrame {
     }
 
     Ok(Some(Self {
-      bytes: bytes[..reader.position].to_vec(),
+      consumed: reader.position,
       params_offset,
       params_len,
     }))
+  }
+
+  #[must_use]
+  pub fn consumed(&self) -> usize {
+    self.consumed
+  }
+
+  pub fn frame(&self, bytes: bytes::Bytes) -> RedrawFrame {
+    debug_assert_eq!(bytes.len(), self.consumed);
+    RedrawFrame {
+      bytes,
+      params_offset: self.params_offset,
+      params_len: self.params_len,
+    }
+  }
+}
+
+impl Debug for RedrawFrame {
+  fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fmt
+      .debug_struct("RedrawFrame")
+      .field("len", &self.bytes.len())
+      .finish()
+  }
+}
+
+impl RedrawFrame {
+  pub fn from_slice(bytes: &[u8]) -> RedrawDecodeResult<Self> {
+    let info = RedrawFrameInfo::probe(bytes)?.expect("redraw frame");
+    Ok(info.frame(bytes::Bytes::copy_from_slice(&bytes[..info.consumed])))
+  }
+
+  pub fn from_bytes(bytes: bytes::Bytes) -> RedrawDecodeResult<Self> {
+    let info = RedrawFrameInfo::probe(&bytes)?.expect("redraw frame");
+    Ok(info.frame(bytes))
   }
 
   pub fn consumed(&self) -> usize {
@@ -218,7 +249,6 @@ impl RedrawFrame {
 }
 
 /// A single msgpack value borrowed from the input buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RawMsgpack<'de> {
   bytes: &'de [u8],
 }
@@ -253,50 +283,7 @@ impl<'de> RawMsgpack<'de> {
   }
 }
 
-/// Return whether the msgpack-rpc envelope's method slot is `redraw`.
-///
-/// This is intentionally narrow: the future fast path only needs to decide
-/// whether the next local Neovim message should use the redraw reader.
-///
-/// `RedrawDecodeError::Incomplete` means the buffer is incomplete before the
-/// method and params array header can be checked.
-#[cfg(test)]
-fn is_redraw_method(bytes: &[u8]) -> RedrawDecodeResult<bool> {
-  let mut reader = MsgpackReader::new(bytes);
-  let outer_len = match reader.read_rmp(decode::read_array_len) {
-    Ok(len) => len,
-    Err(ValueReadError::TypeMismatch(_)) => return Ok(false),
-    Err(err) => return Err(err.into()),
-  };
-
-  if outer_len < 3 {
-    return Ok(false);
-  }
-
-  let msg_type = match reader.read_rmp(decode::read_int::<u64, _>) {
-    Ok(msg_type) => msg_type,
-    Err(NumValueReadError::TypeMismatch(_))
-    | Err(NumValueReadError::OutOfRange) => return Ok(false),
-    Err(err) => return Err(err.into()),
-  };
-
-  if msg_type != 2 {
-    return Ok(false);
-  }
-
-  if !reader.read_str_eq("redraw")? {
-    return Ok(false);
-  }
-
-  match reader.read_rmp(decode::read_array_len) {
-    Ok(_) => Ok(true),
-    Err(ValueReadError::TypeMismatch(_)) => Ok(false),
-    Err(err) => Err(err.into()),
-  }
-}
-
 /// The params of a `redraw` notification.
-#[derive(Debug, Clone)]
 pub struct RedrawNotification<'de> {
   params: ArrayReader<'de>,
 }
@@ -340,14 +327,12 @@ impl<'de> RedrawNotification<'de> {
 }
 
 /// One redraw event batch, e.g. `["grid_line", [...], ...]`.
-#[derive(Debug, Clone)]
 pub struct RedrawBatch<'de> {
   pub name: &'de str,
   pub args: ArrayReader<'de>,
 }
 
 /// A borrowed reader over msgpack array elements.
-#[derive(Debug, Clone)]
 pub struct ArrayReader<'de> {
   reader: MsgpackReader<'de>,
   remaining: u32,
@@ -498,7 +483,7 @@ impl<'de> ArrayReader<'de> {
 }
 
 /// A borrowed reader over msgpack map entries.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MapReader<'de> {
   reader: MsgpackReader<'de>,
   remaining: u32,
@@ -558,7 +543,7 @@ impl<'de> MapReader<'de> {
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct MsgpackReader<'de> {
   input: &'de [u8],
   position: usize,
@@ -967,23 +952,21 @@ mod tests {
   }
 
   #[test]
-  fn is_redraw_method_accepts_redraw_notification() {
-    let bytes =
-      redraw_notification(vec![Value::from(vec![Value::from("flush")])]);
-
-    assert!(is_redraw_method(&bytes).unwrap());
-  }
-
-  #[test]
-  fn is_redraw_method_checks_rpc_method_and_params_header() {
-    assert_eq!(
-      is_redraw_method(&encode_value(Value::from("redraw"))).unwrap(),
-      false
+  fn redraw_frame_probe_rejects_non_redraw_messages() {
+    assert!(
+      RedrawFrameInfo::probe(&encode_value(Value::from("redraw")))
+        .unwrap()
+        .is_none()
     );
-    assert!(!is_redraw_method(&rpc_message(Vec::new())).unwrap());
-    assert_eq!(
-      is_redraw_method(&rpc_message(vec![Value::from(2)])).unwrap(),
-      false
+    assert!(
+      RedrawFrameInfo::probe(&rpc_message(Vec::new()))
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+      RedrawFrameInfo::probe(&rpc_message(vec![Value::from(2)]))
+        .unwrap()
+        .is_none()
     );
 
     let request = rpc_message(vec![
@@ -992,7 +975,7 @@ mod tests {
       Value::from("redraw"),
       Value::from(Vec::<Value>::new()),
     ]);
-    assert!(!is_redraw_method(&request).unwrap());
+    assert!(RedrawFrameInfo::probe(&request).unwrap().is_none());
 
     let response = rpc_message(vec![
       Value::from(1),
@@ -1000,62 +983,24 @@ mod tests {
       Value::Nil,
       Value::from(true),
     ]);
-    assert!(!is_redraw_method(&response).unwrap());
+    assert!(RedrawFrameInfo::probe(&response).unwrap().is_none());
 
     let non_redraw = rpc_message(vec![
       Value::from(2),
       Value::from("not-redraw"),
       Value::from(Vec::<Value>::new()),
     ]);
-    assert!(!is_redraw_method(&non_redraw).unwrap());
+    assert!(RedrawFrameInfo::probe(&non_redraw).unwrap().is_none());
 
     let method_only = rpc_message(vec![Value::from(2), Value::from("redraw")]);
-    assert!(!is_redraw_method(&method_only).unwrap());
+    assert!(RedrawFrameInfo::probe(&method_only).unwrap().is_none());
 
     let non_array_params = rpc_message(vec![
       Value::from(2),
       Value::from("redraw"),
       Value::from("not-array"),
     ]);
-    assert!(!is_redraw_method(&non_array_params).unwrap());
-  }
-
-  #[test]
-  fn is_redraw_method_reports_incomplete_prefix() {
-    assert_incomplete(is_redraw_method(&[]));
-
-    let missing_params_header = [
-      Marker::FixArray(3).to_u8(),
-      2,
-      Marker::FixStr(6).to_u8(),
-      b'r',
-      b'e',
-      b'd',
-      b'r',
-      b'a',
-      b'w',
-    ];
-    assert_incomplete(is_redraw_method(&missing_params_header));
-  }
-
-  #[test]
-  fn is_redraw_method_does_not_read_payload_tail() {
-    let bytes = [
-      Marker::FixArray(4).to_u8(),
-      2,
-      Marker::FixStr(6).to_u8(),
-      b'r',
-      b'e',
-      b'd',
-      b'r',
-      b'a',
-      b'w',
-      Marker::FixArray(0).to_u8(),
-      Marker::FixStr(2).to_u8(),
-      b'a',
-    ];
-
-    assert!(is_redraw_method(&bytes).unwrap());
+    assert!(RedrawFrameInfo::probe(&non_array_params).unwrap().is_none());
   }
 
   #[test]
@@ -1080,14 +1025,17 @@ mod tests {
       Value::from(Vec::<Value>::new()),
     ]);
 
-    let frame = RedrawFrame::probe(&redraw).unwrap().expect("redraw frame");
-    assert_eq!(frame.consumed(), redraw.len());
+    let info = RedrawFrameInfo::probe(&redraw)
+      .unwrap()
+      .expect("redraw frame");
+    assert_eq!(info.consumed(), redraw.len());
+    let frame = RedrawFrame::from_slice(&redraw).unwrap();
     assert_eq!(frame.as_bytes(), redraw.as_slice());
     assert!(matches!(
-      RedrawFrame::probe(&incomplete_redraw_prefix),
+      RedrawFrameInfo::probe(&incomplete_redraw_prefix),
       Err(RedrawDecodeError::Incomplete)
     ));
-    assert!(RedrawFrame::probe(&request).unwrap().is_none());
+    assert!(RedrawFrameInfo::probe(&request).unwrap().is_none());
   }
 
   #[test]
@@ -1099,7 +1047,7 @@ mod tests {
       ]),
       Value::from(vec![Value::from("flush")]),
     ]);
-    let frame = RedrawFrame::probe(&redraw).unwrap().expect("redraw frame");
+    let frame = RedrawFrame::from_slice(&redraw).unwrap();
     let mut notification = frame.notification().unwrap();
     let mut seen = Vec::new();
 
@@ -1127,7 +1075,7 @@ mod tests {
   }
 
   #[test]
-  fn is_redraw_method_reports_malformed_method_payloads() {
+  fn redraw_frame_probe_reports_malformed_method_payloads() {
     let invalid_utf8_method = vec![
       Marker::FixArray(3).to_u8(),
       2,
@@ -1137,7 +1085,7 @@ mod tests {
       Marker::FixArray(0).to_u8(),
     ];
     assert_reader_error_kind(
-      is_redraw_method(&invalid_utf8_method),
+      RedrawFrameInfo::probe(&invalid_utf8_method),
       ErrorKind::InvalidData,
     );
 
@@ -1148,11 +1096,11 @@ mod tests {
       2,
       b'a',
     ];
-    assert_incomplete(is_redraw_method(&incomplete_method));
+    assert_incomplete(RedrawFrameInfo::probe(&incomplete_method));
 
     let incomplete_first_item =
       vec![Marker::FixArray(3).to_u8(), Marker::U16.to_u8(), 1];
-    assert_incomplete(is_redraw_method(&incomplete_first_item));
+    assert_incomplete(RedrawFrameInfo::probe(&incomplete_first_item));
   }
 
   #[test]

@@ -2,7 +2,7 @@
 //! [`tokio`](tokio)
 use std::{
   future::Future,
-  io::{self, Error, ErrorKind},
+  io::{self, Error},
   path::Path,
   process::Stdio,
 };
@@ -100,7 +100,7 @@ where
 
       // Based on the example in the tokio docs, see explanation there
       // https://docs.rs/tokio/latest/tokio/net/windows/named_pipe/struct.NamedPipeClient.html
-      let client = loop {
+      loop {
         match ClientOptions::new().open(path.as_ref()) {
           Ok(client) => break client,
           Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => (),
@@ -108,9 +108,7 @@ where
         }
 
         time::sleep(Duration::from_millis(50)).await;
-      };
-
-      client
+      }
     }
   };
   let (reader, writer) = split(stream);
@@ -175,12 +173,12 @@ where
   let stdout = child
     .stdout
     .take()
-    .ok_or_else(|| Error::new(ErrorKind::Other, "Can't open stdout"))?
+    .ok_or_else(|| Error::other("Can't open stdout"))?
     .compat();
   let stdin = child
     .stdin
     .take()
-    .ok_or_else(|| Error::new(ErrorKind::Other, "Can't open stdin"))?
+    .ok_or_else(|| Error::other("Can't open stdin"))?
     .compat_write();
 
   let (neovim, io) = Neovim::<Compat<ChildStdin>>::new(stdout, stdin, handler);
@@ -241,12 +239,12 @@ where
   let stdout = child
     .stdout
     .take()
-    .ok_or_else(|| Error::new(ErrorKind::Other, "Can't open stdout"))?
+    .ok_or_else(|| Error::other("Can't open stdout"))?
     .compat();
   let stdin = child
     .stdin
     .take()
-    .ok_or_else(|| Error::new(ErrorKind::Other, "Can't open stdin"))?
+    .ok_or_else(|| Error::other("Can't open stdin"))?
     .compat_write();
 
   let (neovim, io) =

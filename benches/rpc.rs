@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use criterion::{
   BatchSize, BenchmarkId, Criterion, Throughput, criterion_group,
   criterion_main,
@@ -13,7 +14,8 @@ use navy_nvim_rs::rpc::{
     encode_sync, encode_with_state,
   },
   redraw::{
-    RedrawDecodeError, RedrawDecodeResult, RedrawFrame, RedrawNotification,
+    RedrawDecodeError, RedrawDecodeResult, RedrawFrame, RedrawFrameInfo,
+    RedrawNotification,
   },
 };
 use rmpv::{Value, decode::read_value};
@@ -27,14 +29,14 @@ const FIXTURE_MAGIC: &[u8] = b"NVIMRSUI1\n";
 
 #[derive(Clone)]
 struct CapturedMessage {
-  bytes: Vec<u8>,
+  bytes: Bytes,
   event_names: Vec<String>,
 }
 
 #[derive(Clone)]
 struct BenchInput {
   name: String,
-  bytes: Vec<u8>,
+  bytes: Bytes,
 }
 
 fn encode_request_message() -> RpcMessage {
@@ -109,26 +111,29 @@ fn consume_redraw_arrays_for_bench(
   Ok(value_count)
 }
 
-fn redraw_frame(bytes: &[u8]) -> RedrawFrame {
-  RedrawFrame::probe(bytes).unwrap().expect("redraw frame")
+fn redraw_frame(bytes: Bytes) -> RedrawFrame {
+  RedrawFrame::from_bytes(bytes).unwrap()
 }
 
-fn parse_redraw_arrays(bytes: &[u8]) -> usize {
-  let frame = redraw_frame(bytes);
+fn parse_redraw_arrays(bytes: &Bytes) -> usize {
+  let frame = redraw_frame(bytes.clone());
   consume_redraw_arrays_for_bench(frame.notification().unwrap()).unwrap()
 }
 
-fn parse_redraw_arrays_batch(bytes: &[u8], count: usize) -> usize {
-  let mut rest = bytes;
+fn parse_redraw_arrays_batch(bytes: &Bytes, count: usize) -> usize {
+  let mut rest = bytes.clone();
   let mut parsed = 0;
   let mut value_count = 0;
 
   while parsed < count {
-    let frame = redraw_frame(rest);
-    let consumed = frame.consumed();
+    let info = RedrawFrameInfo::probe(&rest)
+      .unwrap()
+      .expect("redraw frame");
+    let consumed = info.consumed();
+    let frame = info.frame(rest.slice(..consumed));
     value_count +=
       consume_redraw_arrays_for_bench(frame.notification().unwrap()).unwrap();
-    rest = &rest[consumed..];
+    rest = rest.slice(consumed..);
     parsed += 1;
   }
 
@@ -148,10 +153,10 @@ fn decode_redraw_frames_from_reader(
 
     while decoded < count {
       while decoder.has_rest() {
-        match RedrawFrame::probe(decoder.rest()) {
-          Ok(Some(frame)) => {
-            let consumed = frame.consumed();
-            decoder.consume(consumed);
+        match RedrawFrameInfo::probe(decoder.rest()) {
+          Ok(Some(info)) => {
+            let bytes = decoder.take_rest(info.consumed());
+            let frame = info.frame(bytes);
             frame_bytes += black_box(frame.as_bytes()).len();
           }
           Ok(None) => {
@@ -190,7 +195,7 @@ fn decode_non_redraw_messages_from_reader(
 
     while decoded < count {
       while decoder.has_rest() {
-        match RedrawFrame::probe(decoder.rest()) {
+        match RedrawFrameInfo::probe(decoder.rest()) {
           Ok(Some(_)) => panic!("unexpected redraw frame"),
           Ok(None) => {
             if let Some(msg) = decoder.try_decode_message().unwrap() {
@@ -256,7 +261,7 @@ fn nvim_ui_fixture(fixture: &[u8]) -> Vec<CapturedMessage> {
     let (bytes, rest) = input.split_at(len);
     input = rest;
     messages.push(CapturedMessage {
-      bytes: bytes.to_vec(),
+      bytes: Bytes::copy_from_slice(bytes),
       event_names: redraw_event_names(bytes),
     });
   }
@@ -398,7 +403,7 @@ fn bench_decode(c: &mut Criterion) {
       |b, bytes| {
         let mut decoder = DecodeState::new();
         b.iter_batched(
-          || bytes.clone(),
+          || bytes.to_vec(),
           |bytes| {
             black_box(decode_redraw_frames_from_reader(&mut decoder, bytes, 1))
           },
@@ -490,7 +495,7 @@ fn bench_redraw_array_reader(c: &mut Criterion) {
   let ui_batch = captured_ui_init
     .iter()
     .flat_map(|msg| msg.bytes.iter().copied())
-    .collect::<Vec<_>>();
+    .collect::<Bytes>();
   group.throughput(Throughput::Bytes(ui_batch.len() as u64));
   group.bench_function("batch_nvim_ui_init", |b| {
     b.iter(|| black_box(parse_redraw_arrays_batch(&ui_batch, ui_batch_count)));
@@ -500,7 +505,7 @@ fn bench_redraw_array_reader(c: &mut Criterion) {
   let scroll_ui_batch = captured_scroll_ui
     .iter()
     .flat_map(|msg| msg.bytes.iter().copied())
-    .collect::<Vec<_>>();
+    .collect::<Bytes>();
   group.throughput(Throughput::Bytes(scroll_ui_batch.len() as u64));
   group.bench_function("batch_nvim_ui_scroll", |b| {
     b.iter(|| {

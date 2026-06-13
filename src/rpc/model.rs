@@ -6,6 +6,7 @@ use std::{
   sync::Arc,
 };
 
+use bytes::{Bytes, BytesMut};
 use futures::{
   io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
   lock::Mutex,
@@ -43,7 +44,7 @@ pub enum RpcMessage {
 
 /// State reused while decoding msgpack-rpc messages from a stream.
 pub struct DecodeState {
-  rest: Vec<u8>,
+  rest: BytesMut,
   start: usize,
   // OnceCell is not available because `get_mut_or_init` is not stabilized yet
   read_buf: Option<Box<[u8; DECODE_READ_BUFFER_SIZE]>>,
@@ -59,7 +60,7 @@ impl DecodeState {
   #[must_use]
   pub fn new() -> Self {
     Self {
-      rest: Vec::new(),
+      rest: BytesMut::new(),
       start: 0,
       read_buf: None,
     }
@@ -68,16 +69,10 @@ impl DecodeState {
   #[must_use]
   pub fn with_rest(rest: Vec<u8>) -> Self {
     Self {
-      rest,
+      rest: BytesMut::from(&rest[..]),
       start: 0,
       read_buf: None,
     }
-  }
-
-  #[must_use]
-  pub fn into_rest(mut self) -> Vec<u8> {
-    self.compact_rest();
-    self.rest
   }
 
   pub fn has_rest(&self) -> bool {
@@ -102,10 +97,16 @@ impl DecodeState {
 
   pub fn consume(&mut self, consumed: usize) {
     self.start += consumed;
-    if self.start >= self.rest.len() {
+    debug_assert!(self.start <= self.rest.len());
+    if self.start == self.rest.len() {
       self.rest.clear();
       self.start = 0;
     }
+  }
+
+  pub fn take_rest(&mut self, consumed: usize) -> Bytes {
+    self.compact_rest();
+    self.rest.split_to(consumed).freeze()
   }
 
   pub async fn read_next_chunk<R>(
@@ -138,15 +139,7 @@ impl DecodeState {
       return;
     }
 
-    if self.start >= self.rest.len() {
-      self.rest.clear();
-      self.start = 0;
-      return;
-    }
-
-    let remaining = self.rest.len() - self.start;
-    self.rest.copy_within(self.start.., 0);
-    self.rest.truncate(remaining);
+    let _ = self.rest.split_to(self.start);
     self.start = 0;
   }
 }
@@ -601,7 +594,7 @@ mod decode_state_tests {
   }
 
   fn redraw_frame(bytes: &[u8]) -> RedrawFrame {
-    RedrawFrame::probe(bytes).unwrap().expect("redraw frame")
+    RedrawFrame::from_slice(bytes).unwrap()
   }
 
   fn decode_next_from_state(
@@ -800,7 +793,7 @@ mod decode_state_tests {
     };
 
     decoder.consume(consumed);
-    assert_eq!(decoder.into_rest(), msg_bytes);
+    assert_eq!(decoder.rest(), msg_bytes.as_slice());
   }
 }
 

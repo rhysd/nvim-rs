@@ -27,7 +27,7 @@ use crate::{
     handler::Handler,
     model,
     model::{IntoVal, RpcMessage},
-    redraw::{RedrawDecodeError, RedrawFrame},
+    redraw::{RedrawDecodeError, RedrawFrame, RedrawFrameInfo},
   },
   uioptions::UiAttachOptions,
 };
@@ -444,9 +444,10 @@ where
   {
     loop {
       if decoder.has_rest() {
-        match RedrawFrame::probe(decoder.rest()) {
-          Ok(Some(frame)) => {
-            decoder.consume(frame.consumed());
+        match RedrawFrameInfo::probe(decoder.rest()) {
+          Ok(Some(info)) => {
+            let bytes = decoder.take_rest(info.consumed());
+            let frame = info.frame(bytes);
             return Ok(HandlerMessage::RedrawPayload(frame));
           }
           Ok(None) => {
@@ -621,9 +622,7 @@ mod tests {
     };
 
     block_on(async {
-      let frame = RedrawFrame::probe(&redraw_bytes())
-        .unwrap()
-        .expect("redraw frame");
+      let frame = RedrawFrame::from_slice(&redraw_bytes()).unwrap();
       sender
         .send(HandlerMessage::RedrawPayload(frame))
         .await
