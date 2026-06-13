@@ -128,8 +128,10 @@ impl<'de> RedrawFrame<'de> {
   /// `Ok(None)` means either the next frame is not a `redraw` notification or
   /// the frame is not complete yet.
   pub fn try_read(bytes: &'de [u8]) -> Result<Option<Self>, RedrawDecodeError> {
-    if !is_redraw_method(bytes)? {
-      return Ok(None);
+    match is_redraw_method(bytes) {
+      Ok(true) => {}
+      Ok(false) | Err(RedrawDecodeError::Incomplete) => return Ok(None),
+      Err(err) => return Err(err),
     }
 
     match Self::read(bytes) {
@@ -1021,6 +1023,27 @@ mod tests {
     bytes.pop();
 
     assert!(RedrawFrame::try_read(&bytes).unwrap().is_none());
+  }
+
+  #[test]
+  fn try_read_redraw_frame_waits_for_complete_redraw_prefix() {
+    let missing_params_header = [
+      Marker::FixArray(3).to_u8(),
+      2,
+      Marker::FixStr(6).to_u8(),
+      b'r',
+      b'e',
+      b'd',
+      b'r',
+      b'a',
+      b'w',
+    ];
+
+    assert!(
+      RedrawFrame::try_read(&missing_params_header)
+        .unwrap()
+        .is_none()
+    );
   }
 
   #[test]
