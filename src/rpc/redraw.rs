@@ -306,6 +306,11 @@ pub struct ArrayReader<'de> {
 }
 
 impl<'de> ArrayReader<'de> {
+  pub fn new(input: &'de [u8]) -> RedrawDecodeResult<Self> {
+    let mut reader = MsgpackReader::new(input);
+    reader.read_array_reader()
+  }
+
   #[must_use]
   pub fn remaining(&self) -> u32 {
     self.remaining
@@ -354,6 +359,13 @@ impl<'de> ArrayReader<'de> {
   pub fn read_f64(&mut self) -> RedrawDecodeResult<f64> {
     self.ensure_remaining()?;
     let value = self.reader.read_f64()?;
+    self.remaining -= 1;
+    Ok(value)
+  }
+
+  pub fn read_as_string(&mut self) -> RedrawDecodeResult<Option<String>> {
+    self.ensure_remaining()?;
+    let value = self.reader.read_as_string()?;
     self.remaining -= 1;
     Ok(value)
   }
@@ -598,6 +610,36 @@ impl<'de> MsgpackReader<'de> {
     })
   }
 
+  fn read_as_string(&mut self) -> RedrawDecodeResult<Option<String>> {
+    let start = self.position;
+
+    match self.read_rmp(decode::read_marker)? {
+      Marker::FixPos(value) => Ok(Some(value.to_string())),
+      Marker::FixNeg(value) => Ok(Some(value.to_string())),
+      Marker::False => Ok(Some(false.to_string())),
+      Marker::True => Ok(Some(true.to_string())),
+      Marker::U8 => Ok(Some(self.read_data_u8()?.to_string())),
+      Marker::U16 => Ok(Some(self.read_data_u16()?.to_string())),
+      Marker::U32 => Ok(Some(self.read_data_u32()?.to_string())),
+      Marker::U64 => Ok(Some(self.read_data_u64()?.to_string())),
+      Marker::I8 => Ok(Some(self.read_data_i8()?.to_string())),
+      Marker::I16 => Ok(Some(self.read_data_i16()?.to_string())),
+      Marker::I32 => Ok(Some(self.read_data_i32()?.to_string())),
+      Marker::I64 => Ok(Some(self.read_data_i64()?.to_string())),
+      Marker::F32 => Ok(Some(self.read_data_f32()?.to_string())),
+      Marker::F64 => Ok(Some(self.read_data_f64()?.to_string())),
+      Marker::FixStr(_) | Marker::Str8 | Marker::Str16 | Marker::Str32 => {
+        self.position = start;
+        Ok(Some(self.read_str()?.to_owned()))
+      }
+      _ => {
+        self.position = start;
+        self.skip_value()?;
+        Ok(None)
+      }
+    }
+  }
+
   fn skip_value(&mut self) -> RedrawDecodeResult<()> {
     // Redraw payloads come from the local Neovim process and are treated as
     // trusted input, so this skip reader intentionally does not enforce a
@@ -708,6 +750,34 @@ impl<'de> MsgpackReader<'de> {
     Ok(self.read_rmp(RmpRead::read_data_u32)?)
   }
 
+  fn read_data_u64(&mut self) -> RedrawDecodeResult<u64> {
+    Ok(self.read_rmp(RmpRead::read_data_u64)?)
+  }
+
+  fn read_data_i8(&mut self) -> RedrawDecodeResult<i8> {
+    Ok(self.read_rmp(RmpRead::read_data_i8)?)
+  }
+
+  fn read_data_i16(&mut self) -> RedrawDecodeResult<i16> {
+    Ok(self.read_rmp(RmpRead::read_data_i16)?)
+  }
+
+  fn read_data_i32(&mut self) -> RedrawDecodeResult<i32> {
+    Ok(self.read_rmp(RmpRead::read_data_i32)?)
+  }
+
+  fn read_data_i64(&mut self) -> RedrawDecodeResult<i64> {
+    Ok(self.read_rmp(RmpRead::read_data_i64)?)
+  }
+
+  fn read_data_f32(&mut self) -> RedrawDecodeResult<f32> {
+    Ok(self.read_rmp(RmpRead::read_data_f32)?)
+  }
+
+  fn read_data_f64(&mut self) -> RedrawDecodeResult<f64> {
+    Ok(self.read_rmp(RmpRead::read_data_f64)?)
+  }
+
   fn skip_bytes(&mut self, len: usize) -> RedrawDecodeResult<()> {
     let Some(end) = self.position.checked_add(len) else {
       let err = RedrawDecodeError::Invalid("msgpack cursor overflow".into());
@@ -786,6 +856,10 @@ mod tests {
   }
 
   fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_be_bytes());
+  }
+
+  fn push_u64(bytes: &mut Vec<u8>, value: u64) {
     bytes.extend_from_slice(&value.to_be_bytes());
   }
 
@@ -1116,6 +1190,85 @@ mod tests {
     let mut array = reader.read_array_reader().unwrap();
     assert_eq!(array.read_f32().unwrap(), f32_value);
     assert_eq!(array.read_f64().unwrap(), f64_value);
+  }
+
+  #[test]
+  fn array_reader_new_reads_array_payload() {
+    let bytes =
+      encode_value(Value::from(vec![Value::from(24), Value::from("text")]));
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_eq!(array.remaining(), 2);
+    assert_eq!(array.read_u64().unwrap(), 24);
+    assert_eq!(array.read_str().unwrap(), "text");
+    assert!(array.is_empty());
+  }
+
+  #[test]
+  fn array_reader_stringifies_scalar_values() {
+    let f32_value = 1.25_f32;
+    let f64_value = -2.5_f64;
+    let mut bytes = vec![Marker::Array16.to_u8()];
+    push_u16(&mut bytes, 18);
+    bytes.push(Marker::FixPos(24).to_u8());
+    bytes.push(Marker::FixNeg(-1).to_u8());
+    bytes.extend_from_slice(&[Marker::U8.to_u8(), 255]);
+    bytes.push(Marker::U16.to_u8());
+    push_u16(&mut bytes, 256);
+    bytes.push(Marker::U32.to_u8());
+    push_u32(&mut bytes, 65_536);
+    bytes.push(Marker::U64.to_u8());
+    push_u64(&mut bytes, 9_007_199_254_740_991);
+    bytes.push(Marker::I8.to_u8());
+    bytes.extend_from_slice(&(-2_i8).to_be_bytes());
+    bytes.push(Marker::I16.to_u8());
+    bytes.extend_from_slice(&(-257_i16).to_be_bytes());
+    bytes.push(Marker::I32.to_u8());
+    bytes.extend_from_slice(&(-65_537_i32).to_be_bytes());
+    bytes.push(Marker::I64.to_u8());
+    bytes.extend_from_slice(&(-2_147_483_649_i64).to_be_bytes());
+    bytes.push(Marker::True.to_u8());
+    bytes.push(Marker::False.to_u8());
+    bytes.extend_from_slice(&encoded_f32(f32_value));
+    bytes.extend_from_slice(&encoded_f64(f64_value));
+    bytes.push(Marker::FixStr(4).to_u8());
+    bytes.extend_from_slice(b"text");
+    bytes.push(Marker::Null.to_u8());
+    bytes.push(Marker::FixArray(1).to_u8());
+    bytes.push(Marker::FixPos(1).to_u8());
+    bytes.push(Marker::FixMap(1).to_u8());
+    bytes.push(Marker::Null.to_u8());
+    bytes.push(Marker::True.to_u8());
+
+    let mut reader = MsgpackReader::new(&bytes);
+    let mut array = reader.read_array_reader().unwrap();
+
+    assert_eq!(array.read_as_string().unwrap().as_deref(), Some("24"));
+    assert_eq!(array.read_as_string().unwrap().as_deref(), Some("-1"));
+    assert_eq!(array.read_as_string().unwrap().as_deref(), Some("255"));
+    assert_eq!(array.read_as_string().unwrap().as_deref(), Some("256"));
+    assert_eq!(array.read_as_string().unwrap().as_deref(), Some("65536"));
+    assert_eq!(
+      array.read_as_string().unwrap().as_deref(),
+      Some("9007199254740991")
+    );
+    assert_eq!(array.read_as_string().unwrap().as_deref(), Some("-2"));
+    assert_eq!(array.read_as_string().unwrap().as_deref(), Some("-257"));
+    assert_eq!(array.read_as_string().unwrap().as_deref(), Some("-65537"));
+    assert_eq!(
+      array.read_as_string().unwrap().as_deref(),
+      Some("-2147483649")
+    );
+    assert_eq!(array.read_as_string().unwrap().as_deref(), Some("true"));
+    assert_eq!(array.read_as_string().unwrap().as_deref(), Some("false"));
+    assert_eq!(array.read_as_string().unwrap().as_deref(), Some("1.25"));
+    assert_eq!(array.read_as_string().unwrap().as_deref(), Some("-2.5"));
+    assert_eq!(array.read_as_string().unwrap().as_deref(), Some("text"));
+    assert_eq!(array.read_as_string().unwrap(), None);
+    assert_eq!(array.read_as_string().unwrap(), None);
+    assert_eq!(array.read_as_string().unwrap(), None);
+    assert!(array.is_empty());
+    assert_incomplete(array.read_as_string());
   }
 
   #[test]
