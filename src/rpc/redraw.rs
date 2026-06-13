@@ -200,6 +200,14 @@ impl<'de> RawMsgpack<'de> {
   pub fn as_bool(&self) -> RedrawDecodeResult<bool> {
     Ok(decode::read_bool(&mut Bytes::new(self.bytes))?)
   }
+
+  pub fn as_f32(&self) -> RedrawDecodeResult<f32> {
+    Ok(decode::read_f32(&mut Bytes::new(self.bytes))?)
+  }
+
+  pub fn as_f64(&self) -> RedrawDecodeResult<f64> {
+    Ok(decode::read_f64(&mut Bytes::new(self.bytes))?)
+  }
 }
 
 /// Return whether the msgpack-rpc envelope's method slot is `redraw`.
@@ -332,6 +340,20 @@ impl<'de> ArrayReader<'de> {
   pub fn read_bool(&mut self) -> RedrawDecodeResult<bool> {
     self.ensure_remaining()?;
     let value = self.reader.read_bool()?;
+    self.remaining -= 1;
+    Ok(value)
+  }
+
+  pub fn read_f32(&mut self) -> RedrawDecodeResult<f32> {
+    self.ensure_remaining()?;
+    let value = self.reader.read_f32()?;
+    self.remaining -= 1;
+    Ok(value)
+  }
+
+  pub fn read_f64(&mut self) -> RedrawDecodeResult<f64> {
+    self.ensure_remaining()?;
+    let value = self.reader.read_f64()?;
     self.remaining -= 1;
     Ok(value)
   }
@@ -532,6 +554,14 @@ impl<'de> MsgpackReader<'de> {
 
   fn read_bool(&mut self) -> RedrawDecodeResult<bool> {
     Ok(self.read_rmp(decode::read_bool)?)
+  }
+
+  fn read_f32(&mut self) -> RedrawDecodeResult<f32> {
+    Ok(self.read_rmp(decode::read_f32)?)
+  }
+
+  fn read_f64(&mut self) -> RedrawDecodeResult<f64> {
+    Ok(self.read_rmp(decode::read_f64)?)
   }
 
   fn read_array_len(&mut self) -> RedrawDecodeResult<u32> {
@@ -757,6 +787,18 @@ mod tests {
 
   fn push_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_be_bytes());
+  }
+
+  fn encoded_f32(value: f32) -> Vec<u8> {
+    let mut bytes = vec![Marker::F32.to_u8()];
+    bytes.extend_from_slice(&value.to_bits().to_be_bytes());
+    bytes
+  }
+
+  fn encoded_f64(value: f64) -> Vec<u8> {
+    let mut bytes = vec![Marker::F64.to_u8()];
+    bytes.extend_from_slice(&value.to_bits().to_be_bytes());
+    bytes
   }
 
   fn fixed_payload(marker: Marker, len: usize) -> Vec<u8> {
@@ -1052,6 +1094,28 @@ mod tests {
         Ok(())
       })
       .unwrap();
+  }
+
+  #[test]
+  fn readers_read_float_values() {
+    let f32_value = 1.25_f32;
+    let f64_value = -2.5_f64;
+    let mut bytes = vec![Marker::FixArray(2).to_u8()];
+    bytes.extend_from_slice(&encoded_f32(f32_value));
+    bytes.extend_from_slice(&encoded_f64(f64_value));
+
+    let mut reader = MsgpackReader::new(&bytes);
+    let mut array = reader.read_array_reader().unwrap();
+
+    let raw_f32 = array.read_raw_value().unwrap();
+    let raw_f64 = array.read_raw_value().unwrap();
+    assert_eq!(raw_f32.as_f32().unwrap(), f32_value);
+    assert_eq!(raw_f64.as_f64().unwrap(), f64_value);
+
+    let mut reader = MsgpackReader::new(&bytes);
+    let mut array = reader.read_array_reader().unwrap();
+    assert_eq!(array.read_f32().unwrap(), f32_value);
+    assert_eq!(array.read_f64().unwrap(), f64_value);
   }
 
   #[test]
