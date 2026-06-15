@@ -26,7 +26,7 @@ use crate::{
   rpc::{
     handler::Handler,
     model,
-    model::{IntoVal, RpcMessage},
+    model::{IntoVal, MessageType, RpcMessage},
     redraw::{RedrawDecodeError, RedrawFrame, RedrawFrameInfo},
   },
   uioptions::UiAttachOptions,
@@ -282,8 +282,13 @@ where
     self.queue.lock().await.push((msgid, sender));
 
     let writer = self.writer.clone();
-    model::encode_request_value_ref_with_state(writer, msgid, method, args)
-      .await?;
+    model::encode_value_ref_with_state(
+      &writer,
+      MessageType::Request(msgid),
+      method,
+      args,
+    )
+    .await?;
 
     Ok(receiver)
   }
@@ -326,6 +331,21 @@ where
       .map_err(|e| CallError::SendError(*e, method.to_owned()))?;
 
     receive_response(receiver, method).await
+  }
+
+  pub async fn notify_value_ref(
+    &self,
+    method: &str,
+    args: &[ValueRef<'_>],
+  ) -> Result<(), Box<CallError>> {
+    model::encode_value_ref_with_state(
+      &self.writer,
+      MessageType::Notification,
+      method,
+      args,
+    )
+    .await
+    .map_err(|e| Box::new(CallError::SendError(*e, method.to_owned())))
   }
 
   async fn send_error_to_callers(
@@ -663,6 +683,30 @@ mod tests {
     });
 
     assert_eq!(redraw_count.load(Ordering::Relaxed), 1);
+  }
+
+  #[test]
+  fn notify_value_ref_writes_notification_without_queueing_request() {
+    let nvim = test_neovim();
+
+    block_on(async {
+      nvim
+        .notify_value_ref("nvim_ui_set_focus", &[ValueRef::Boolean(true)])
+        .await
+        .unwrap();
+
+      assert!(nvim.queue.lock().await.is_empty());
+
+      let writer = nvim.writer.lock().await;
+      assert_eq!(
+        writer.get_ref().get_ref(),
+        &encoded_value(Value::from(vec![
+          Value::from(2),
+          Value::from("nvim_ui_set_focus"),
+          Value::from(vec![Value::from(true)]),
+        ]))
+      );
+    });
   }
 
   #[tokio::test]

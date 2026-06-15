@@ -25,6 +25,13 @@ use rmpv::{
 use crate::error::{DecodeError, EncodeError};
 
 const DECODE_READ_BUFFER_SIZE: usize = 80 * 1024;
+const MSG_TYPE_REQUEST: u64 = 0;
+const MSG_TYPE_NOTIFICATION: u64 = 2;
+
+pub(crate) enum MessageType {
+  Request(u64),
+  Notification,
+}
 
 /// A msgpack-rpc message, see
 /// <https://github.com/msgpack-rpc/msgpack-rpc/blob/master/spec.md>
@@ -381,7 +388,7 @@ pub fn encode_sync<W: Write>(
       params,
     } => {
       write_array_len(writer, 4)?;
-      write_uint(writer, 0)?;
+      write_uint(writer, MSG_TYPE_REQUEST)?;
       write_uint(writer, msgid)?;
       write_str(writer, &method)?;
       write_value_array(writer, &params)?;
@@ -399,7 +406,7 @@ pub fn encode_sync<W: Write>(
     }
     RpcMessage::RpcNotification { method, params } => {
       write_array_len(writer, 3)?;
-      write_uint(writer, 2)?;
+      write_uint(writer, MSG_TYPE_NOTIFICATION)?;
       write_str(writer, &method)?;
       write_value_array(writer, &params)?;
     }
@@ -415,7 +422,7 @@ pub fn encode_nvim_input_sync<W: Write>(
   keys: &str,
 ) -> Result<(), Box<EncodeError>> {
   write_array_len(writer, 4)?;
-  write_uint(writer, 0)?;
+  write_uint(writer, MSG_TYPE_REQUEST)?;
   write_uint(writer, msgid)?;
   write_str(writer, "nvim_input")?;
   write_array_len(writer, 1)?;
@@ -424,16 +431,23 @@ pub fn encode_nvim_input_sync<W: Write>(
   Ok(())
 }
 
-/// Encode a request without building owned argument values.
-pub fn encode_request_value_ref_sync<W: Write>(
+fn write_message_value_ref<W: Write>(
   writer: &mut W,
-  msgid: u64,
+  message_type: MessageType,
   method: &str,
   args: &[ValueRef<'_>],
 ) -> Result<(), Box<EncodeError>> {
-  write_array_len(writer, 4)?;
-  write_uint(writer, 0)?;
-  write_uint(writer, msgid)?;
+  match message_type {
+    MessageType::Request(msgid) => {
+      write_array_len(writer, 4)?;
+      write_uint(writer, MSG_TYPE_REQUEST)?;
+      write_uint(writer, msgid)?;
+    }
+    MessageType::Notification => {
+      write_array_len(writer, 3)?;
+      write_uint(writer, MSG_TYPE_NOTIFICATION)?;
+    }
+  }
   write_str(writer, method)?;
   write_array_len(writer, args.len() as u32)?;
   for arg in args {
@@ -476,10 +490,13 @@ impl<W> EncodeState<W> {
 
 /// Encode the given message into the `BufWriter`. Flushes the writer when
 /// finished.
-pub async fn encode<W: AsyncWrite + Send + Unpin + 'static>(
+pub async fn encode<W>(
   writer: Arc<Mutex<W>>,
   msg: RpcMessage,
-) -> Result<(), Box<EncodeError>> {
+) -> Result<(), Box<EncodeError>>
+where
+  W: AsyncWrite + Send + Unpin + 'static,
+{
   let mut v: Vec<u8> = vec![];
   encode_sync(&mut v, msg)?;
 
@@ -491,10 +508,13 @@ pub async fn encode<W: AsyncWrite + Send + Unpin + 'static>(
 }
 
 /// Encode the given message using a buffer reused with the writer.
-pub async fn encode_with_state<W: AsyncWrite + Send + Unpin + 'static>(
+pub async fn encode_with_state<W>(
   state: Arc<Mutex<EncodeState<W>>>,
   msg: RpcMessage,
-) -> Result<(), Box<EncodeError>> {
+) -> Result<(), Box<EncodeError>>
+where
+  W: AsyncWrite + Send + Unpin + 'static,
+{
   let mut state = state.lock().await;
   state.buffer.clear();
   encode_sync(&mut state.buffer, msg)?;
@@ -525,18 +545,19 @@ pub async fn encode_nvim_input_with_state<
   Ok(())
 }
 
-/// Encode a request using borrowed argument values.
-pub async fn encode_request_value_ref_with_state<
-  W: AsyncWrite + Send + Unpin + 'static,
->(
-  state: Arc<Mutex<EncodeState<W>>>,
-  msgid: u64,
+/// Encode a request or notification using borrowed argument values.
+pub(crate) async fn encode_value_ref_with_state<W>(
+  state: &Mutex<EncodeState<W>>,
+  message_type: MessageType,
   method: &str,
   args: &[ValueRef<'_>],
-) -> Result<(), Box<EncodeError>> {
+) -> Result<(), Box<EncodeError>>
+where
+  W: AsyncWrite + Send + Unpin + 'static,
+{
   let mut state = state.lock().await;
   state.buffer.clear();
-  encode_request_value_ref_sync(&mut state.buffer, msgid, method, args)?;
+  write_message_value_ref(&mut state.buffer, message_type, method, args)?;
 
   let EncodeState { writer, buffer } = &mut *state;
   writer.write_all(buffer).await?;
@@ -718,7 +739,7 @@ mod decode_state_tests {
   }
 
   #[test]
-  fn encode_request_value_ref_sync_matches_rpc_message_encoding() {
+  fn encode_value_ref_sync_matches_request_encoding() {
     let cmd = ValueRef::Map(vec![
       (ValueRef::from("cmd"), ValueRef::from("echo")),
       (
@@ -732,11 +753,38 @@ mod decode_state_tests {
     let args = [cmd, opts];
 
     let mut direct = Vec::new();
-    encode_request_value_ref_sync(&mut direct, 7, "nvim_cmd", &args).unwrap();
+    write_message_value_ref(
+      &mut direct,
+      MessageType::Request(7),
+      "nvim_cmd",
+      &args,
+    )
+    .unwrap();
 
     let via_message = encoded(RpcMessage::RpcRequest {
       msgid: 7,
       method: "nvim_cmd".to_owned(),
+      params: args.iter().map(ValueRef::to_owned).collect(),
+    });
+
+    assert_eq!(direct, via_message);
+  }
+
+  #[test]
+  fn encode_value_ref_sync_matches_notification_encoding() {
+    let args = [ValueRef::from(120), ValueRef::from(40)];
+
+    let mut direct = Vec::new();
+    write_message_value_ref(
+      &mut direct,
+      MessageType::Notification,
+      "nvim_ui_try_resize",
+      &args,
+    )
+    .unwrap();
+
+    let via_message = encoded(RpcMessage::RpcNotification {
+      method: "nvim_ui_try_resize".to_owned(),
       params: args.iter().map(ValueRef::to_owned).collect(),
     });
 
