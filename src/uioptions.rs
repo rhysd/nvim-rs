@@ -2,7 +2,7 @@
 //!
 //! This should be used with the manually implemented
 //! [`ui_attach`](crate::neovim::Neovim::ui_attach)
-use rmpv::Value;
+use rmpv::ValueRef;
 
 pub enum UiOption {
   Rgb(bool),
@@ -25,30 +25,49 @@ pub enum UiOption {
 }
 
 impl UiOption {
-  fn to_value(&self) -> (Value, Value) {
-    let name_value = self.to_name_value();
-    (name_value.0.into(), name_value.1)
+  fn to_value_pair(&self) -> (ValueRef<'_>, ValueRef<'_>) {
+    (self.name().into(), self.value())
   }
 
-  fn to_name_value(&self) -> (&'static str, Value) {
+  fn name(&self) -> &'static str {
     match self {
-      Self::Rgb(val) => ("rgb", (*val).into()),
-      Self::Override(val) => ("override", (*val).into()),
-      Self::ExtCmdline(val) => ("ext_cmdline", (*val).into()),
-      Self::ExtHlstate(val) => ("ext_hlstate", (*val).into()),
-      Self::ExtLinegrid(val) => ("ext_linegrid", (*val).into()),
-      Self::ExtMessages(val) => ("ext_messages", (*val).into()),
-      Self::ExtMultigrid(val) => ("ext_multigrid", (*val).into()),
-      Self::ExtPopupmenu(val) => ("ext_popupmenu", (*val).into()),
-      Self::ExtTabline(val) => ("ext_tabline", (*val).into()),
-      Self::ExtTermcolors(val) => ("ext_termcolors", (*val).into()),
-      Self::TermName(val) => ("term_name", val.as_str().into()),
-      Self::TermColors(val) => ("term_colors", (*val).into()),
-      Self::TermBackground(val) => ("term_background", val.as_str().into()),
-      Self::StdinFd(val) => ("stdin_fd", (*val).into()),
-      Self::StdinTty(val) => ("stdin_tty", (*val).into()),
-      Self::StdoutTty(val) => ("stdout_tty", (*val).into()),
-      Self::ExtWildmenu(val) => ("ext_wildmenu", (*val).into()),
+      Self::Rgb(_) => "rgb",
+      Self::Override(_) => "override",
+      Self::ExtCmdline(_) => "ext_cmdline",
+      Self::ExtHlstate(_) => "ext_hlstate",
+      Self::ExtLinegrid(_) => "ext_linegrid",
+      Self::ExtMessages(_) => "ext_messages",
+      Self::ExtMultigrid(_) => "ext_multigrid",
+      Self::ExtPopupmenu(_) => "ext_popupmenu",
+      Self::ExtTabline(_) => "ext_tabline",
+      Self::ExtTermcolors(_) => "ext_termcolors",
+      Self::TermName(_) => "term_name",
+      Self::TermColors(_) => "term_colors",
+      Self::TermBackground(_) => "term_background",
+      Self::StdinFd(_) => "stdin_fd",
+      Self::StdinTty(_) => "stdin_tty",
+      Self::StdoutTty(_) => "stdout_tty",
+      Self::ExtWildmenu(_) => "ext_wildmenu",
+    }
+  }
+
+  fn value(&self) -> ValueRef<'_> {
+    match self {
+      Self::Rgb(val)
+      | Self::Override(val)
+      | Self::ExtCmdline(val)
+      | Self::ExtHlstate(val)
+      | Self::ExtLinegrid(val)
+      | Self::ExtMessages(val)
+      | Self::ExtMultigrid(val)
+      | Self::ExtPopupmenu(val)
+      | Self::ExtTabline(val)
+      | Self::ExtTermcolors(val)
+      | Self::StdinTty(val)
+      | Self::StdoutTty(val)
+      | Self::ExtWildmenu(val) => ValueRef::Boolean(*val),
+      Self::TermName(val) | Self::TermBackground(val) => val.as_str().into(),
+      Self::TermColors(val) | Self::StdinFd(val) => (*val).into(),
     }
   }
 }
@@ -101,20 +120,20 @@ impl UiAttachOptions {
   }
 
   fn set_option(&mut self, option: UiOption) {
-    let name = option.to_name_value();
-    let position = self.options.iter().position(|o| o.0 == name.0);
+    let name = option.name();
+    let position = self.options.iter().position(|o| o.0 == name);
 
     if let Some(position) = position {
       self.options[position].1 = option;
     } else {
-      self.options.push((name.0, option));
+      self.options.push((name, option));
     }
   }
 
   #[must_use]
-  pub fn to_value_map(&self) -> Value {
-    let map = self.options.iter().map(|o| o.1.to_value()).collect();
-    Value::Map(map)
+  pub fn to_value_map(&self) -> ValueRef<'_> {
+    let map = self.options.iter().map(|o| o.1.to_value_pair()).collect();
+    ValueRef::Map(map)
   }
 }
 
@@ -124,16 +143,17 @@ mod tests {
 
   #[test]
   fn test_ui_options() {
-    let value_map = UiAttachOptions::new()
+    let mut options = UiAttachOptions::new();
+    let value_map = options
       .set_rgb(true)
       .set_rgb(false)
       .set_popupmenu_external(true)
       .to_value_map();
 
     assert_eq!(
-      Value::Map(vec![
-        ("rgb".into(), false.into()),
-        ("ext_popupmenu".into(), true.into()),
+      ValueRef::Map(vec![
+        ("rgb".into(), ValueRef::Boolean(false)),
+        ("ext_popupmenu".into(), ValueRef::Boolean(true)),
       ]),
       value_map
     );

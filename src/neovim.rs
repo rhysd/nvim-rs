@@ -505,11 +505,11 @@ where
     height: i64,
     opts: &UiAttachOptions,
   ) -> Result<(), Box<CallError>> {
+    let opts = opts.to_value_map();
+    let args = [width.into(), height.into(), opts];
+
     self
-      .call(
-        "nvim_ui_attach",
-        call_args!(width, height, opts.to_value_map()),
-      )
+      .call_value_ref("nvim_ui_attach", &args)
       .await?
       .map(|_| Ok(()))?
   }
