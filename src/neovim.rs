@@ -31,15 +31,15 @@ use crate::{
   },
   uioptions::UiAttachOptions,
 };
-use rmpv::Value;
+use rmpv::{Value, ValueRef};
 
 /// Pack the given arguments into a `Vec<Value>`, suitable for using it for a
 /// [`call`](crate::neovim::Neovim::call) to neovim.
 #[macro_export]
 macro_rules! call_args {
     () => (Vec::new());
-    ($($e:expr_2021), +,) => (call_args![$($e),*]);
-    ($($e:expr_2021), +) => {{
+    ($($e:expr_2021),+,) => (call_args![$($e),*]);
+    ($($e:expr_2021),+) => {{
         let vec = vec![
           $($e.into_val(),)*
         ];
@@ -271,6 +271,23 @@ where
     Ok(receiver)
   }
 
+  async fn send_value_ref(
+    &self,
+    method: &str,
+    args: &[ValueRef<'_>],
+  ) -> Result<oneshot::Receiver<ResponseResult>, Box<EncodeError>> {
+    let msgid = self.msgid_counter.fetch_add(1, Ordering::Relaxed);
+    let (sender, receiver) = oneshot::channel();
+
+    self.queue.lock().await.push((msgid, sender));
+
+    let writer = self.writer.clone();
+    model::encode_request_value_ref_with_state(writer, msgid, method, args)
+      .await?;
+
+    Ok(receiver)
+  }
+
   pub async fn call(
     &self,
     method: &str,
@@ -296,6 +313,19 @@ where
       .map_err(|e| CallError::SendError(*e, METHOD.to_owned()))?;
 
     receive_response(receiver, METHOD).await
+  }
+
+  pub async fn call_value_ref(
+    &self,
+    method: &str,
+    args: &[ValueRef<'_>],
+  ) -> Result<Result<Value, Value>, Box<CallError>> {
+    let receiver = self
+      .send_value_ref(method, args)
+      .await
+      .map_err(|e| CallError::SendError(*e, method.to_owned()))?;
+
+    receive_response(receiver, method).await
   }
 
   async fn send_error_to_callers(

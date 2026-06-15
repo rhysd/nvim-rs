@@ -16,7 +16,11 @@ use rmp::{
   decode::ValueReadError,
   encode::{write_array_len, write_str, write_uint},
 };
-use rmpv::{Value, decode::read_value, encode::write_value};
+use rmpv::{
+  Value, ValueRef,
+  decode::read_value,
+  encode::{write_value, write_value_ref},
+};
 
 use crate::error::{DecodeError, EncodeError};
 
@@ -420,6 +424,25 @@ pub fn encode_nvim_input_sync<W: Write>(
   Ok(())
 }
 
+/// Encode a request without building owned argument values.
+pub fn encode_request_value_ref_sync<W: Write>(
+  writer: &mut W,
+  msgid: u64,
+  method: &str,
+  args: &[ValueRef<'_>],
+) -> Result<(), Box<EncodeError>> {
+  write_array_len(writer, 4)?;
+  write_uint(writer, 0)?;
+  write_uint(writer, msgid)?;
+  write_str(writer, method)?;
+  write_array_len(writer, args.len() as u32)?;
+  for arg in args {
+    write_value_ref(writer, arg)?;
+  }
+
+  Ok(())
+}
+
 /// State reused while encoding msgpack-rpc messages to a stream.
 pub struct EncodeState<W> {
   writer: W,
@@ -494,6 +517,26 @@ pub async fn encode_nvim_input_with_state<
   let mut state = state.lock().await;
   state.buffer.clear();
   encode_nvim_input_sync(&mut state.buffer, msgid, keys)?;
+
+  let EncodeState { writer, buffer } = &mut *state;
+  writer.write_all(buffer).await?;
+  writer.flush().await?;
+
+  Ok(())
+}
+
+/// Encode a request using borrowed argument values.
+pub async fn encode_request_value_ref_with_state<
+  W: AsyncWrite + Send + Unpin + 'static,
+>(
+  state: Arc<Mutex<EncodeState<W>>>,
+  msgid: u64,
+  method: &str,
+  args: &[ValueRef<'_>],
+) -> Result<(), Box<EncodeError>> {
+  let mut state = state.lock().await;
+  state.buffer.clear();
+  encode_request_value_ref_sync(&mut state.buffer, msgid, method, args)?;
 
   let EncodeState { writer, buffer } = &mut *state;
   writer.write_all(buffer).await?;
@@ -669,6 +712,32 @@ mod decode_state_tests {
       msgid: 7,
       method: "nvim_input".to_owned(),
       params: vec![Value::from("<C-D>")],
+    });
+
+    assert_eq!(direct, via_message);
+  }
+
+  #[test]
+  fn encode_request_value_ref_sync_matches_rpc_message_encoding() {
+    let cmd = ValueRef::Map(vec![
+      (ValueRef::from("cmd"), ValueRef::from("echo")),
+      (
+        ValueRef::from("args"),
+        ValueRef::Array(vec![ValueRef::from("hello")]),
+      ),
+    ]);
+    let opts =
+      ValueRef::Map(vec![(ValueRef::from("output"), ValueRef::Boolean(true))]);
+
+    let args = [cmd, opts];
+
+    let mut direct = Vec::new();
+    encode_request_value_ref_sync(&mut direct, 7, "nvim_cmd", &args).unwrap();
+
+    let via_message = encoded(RpcMessage::RpcRequest {
+      msgid: 7,
+      method: "nvim_cmd".to_owned(),
+      params: args.iter().map(ValueRef::to_owned).collect(),
     });
 
     assert_eq!(direct, via_message);

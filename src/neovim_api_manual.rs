@@ -1,6 +1,6 @@
 //! Some manually implemented API functions
 use futures::io::AsyncWrite;
-use rmpv::Value;
+use rmpv::{Value, ValueRef};
 
 use crate::{
   Buffer, Tabpage, Window,
@@ -108,6 +108,18 @@ where
   pub async fn input(&self, keys: &str) -> Result<i64, Box<CallError>> {
     self
       .call_nvim_input(keys)
+      .await??
+      .try_unpack()
+      .map_err(|v| Box::new(CallError::WrongValueType(v)))
+  }
+
+  pub async fn cmd_value_ref(
+    &self,
+    cmd: ValueRef<'_>,
+    opts: ValueRef<'_>,
+  ) -> Result<String, Box<CallError>> {
+    self
+      .call_value_ref("nvim_cmd", &[cmd, opts])
       .await??
       .try_unpack()
       .map_err(|v| Box::new(CallError::WrongValueType(v)))
