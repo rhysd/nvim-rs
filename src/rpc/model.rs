@@ -28,7 +28,7 @@ const DECODE_READ_BUFFER_SIZE: usize = 80 * 1024;
 const MSG_TYPE_REQUEST: u64 = 0;
 const MSG_TYPE_NOTIFICATION: u64 = 2;
 
-pub(crate) enum MessageType {
+pub enum MessageType {
   Request(u64),
   Notification,
 }
@@ -546,7 +546,7 @@ pub async fn encode_nvim_input_with_state<
 }
 
 /// Encode a request or notification using borrowed argument values.
-pub(crate) async fn encode_value_ref_with_state<W>(
+pub async fn encode_value_ref_with_state<W>(
   state: &Mutex<EncodeState<W>>,
   message_type: MessageType,
   method: &str,
