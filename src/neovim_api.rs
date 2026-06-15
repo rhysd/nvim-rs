@@ -1334,18 +1334,6 @@ where
       .map_err(|v| Box::new(CallError::WrongValueType(v)))
   }
 
-  pub async fn ui_try_resize(
-    &self,
-    width: i64,
-    height: i64,
-  ) -> Result<(), Box<CallError>> {
-    self
-      .call("nvim_ui_try_resize", call_args![width, height])
-      .await??
-      .try_unpack()
-      .map_err(|v| Box::new(CallError::WrongValueType(v)))
-  }
-
   pub async fn ui_set_option(
     &self,
     name: &str,

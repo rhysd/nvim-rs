@@ -113,6 +113,20 @@ where
       .map_err(|v| Box::new(CallError::WrongValueType(v)))
   }
 
+  pub async fn ui_try_resize(
+    &self,
+    width: i64,
+    height: i64,
+  ) -> Result<(), Box<CallError>> {
+    let args = [ValueRef::from(width), ValueRef::from(height)];
+
+    self
+      .call_value_ref("nvim_ui_try_resize", &args)
+      .await??
+      .try_unpack()
+      .map_err(|v| Box::new(CallError::WrongValueType(v)))
+  }
+
   pub async fn cmd_value_ref(
     &self,
     cmd: ValueRef<'_>,

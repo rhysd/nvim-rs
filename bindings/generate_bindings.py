@@ -24,6 +24,7 @@ MANUALLY_IMPLEMENTED = [
         "nvim_create_buf",
         "nvim_open_win",
         "nvim_input",
+        "nvim_ui_try_resize",
         "nvim_list_tabpages",
         "nvim_get_current_tabpage",
         ]
