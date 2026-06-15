@@ -113,6 +113,16 @@ where
       .map_err(|v| Box::new(CallError::WrongValueType(v)))
   }
 
+  pub async fn ui_set_focus(&self, gained: bool) -> Result<(), Box<CallError>> {
+    let args = [ValueRef::Boolean(gained)];
+
+    self
+      .call_value_ref("nvim_ui_set_focus", &args)
+      .await??
+      .try_unpack()
+      .map_err(|v| Box::new(CallError::WrongValueType(v)))
+  }
+
   pub async fn ui_try_resize(
     &self,
     width: i64,

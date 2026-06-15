@@ -1318,14 +1318,6 @@ where
       .map_err(|v| Box::new(CallError::WrongValueType(v)))
   }
 
-  pub async fn ui_set_focus(&self, gained: bool) -> Result<(), Box<CallError>> {
-    self
-      .call("nvim_ui_set_focus", call_args![gained])
-      .await??
-      .try_unpack()
-      .map_err(|v| Box::new(CallError::WrongValueType(v)))
-  }
-
   pub async fn ui_detach(&self) -> Result<(), Box<CallError>> {
     self
       .call("nvim_ui_detach", call_args![])
