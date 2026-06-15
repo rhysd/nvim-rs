@@ -509,7 +509,7 @@ where
 
 /// Encode the given message using a buffer reused with the writer.
 pub async fn encode_with_state<W>(
-  state: Arc<Mutex<EncodeState<W>>>,
+  state: &Mutex<EncodeState<W>>,
   msg: RpcMessage,
 ) -> Result<(), Box<EncodeError>>
 where
@@ -530,7 +530,7 @@ where
 pub async fn encode_nvim_input_with_state<
   W: AsyncWrite + Send + Unpin + 'static,
 >(
-  state: Arc<Mutex<EncodeState<W>>>,
+  state: &Mutex<EncodeState<W>>,
   msgid: u64,
   keys: &str,
 ) -> Result<(), Box<EncodeError>> {
@@ -1017,15 +1017,11 @@ mod test {
     let buff: Vec<u8> = vec![];
     let state = Arc::new(Mutex::new(EncodeState::new(BufWriter::new(buff))));
 
-    encode_with_state(state.clone(), msg_1.clone())
-      .await
-      .unwrap();
+    encode_with_state(&state, msg_1.clone()).await.unwrap();
     let first_capacity = state.lock().await.buffer.capacity();
     assert!(first_capacity > 0);
 
-    encode_with_state(state.clone(), msg_2.clone())
-      .await
-      .unwrap();
+    encode_with_state(&state, msg_2.clone()).await.unwrap();
     let mut state = state.lock().await;
     assert_eq!(first_capacity, state.buffer.capacity());
 

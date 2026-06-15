@@ -19,7 +19,7 @@ use navy_nvim_rs::rpc::{
   },
 };
 use rmpv::{Value, decode::read_value};
-use std::{collections::HashSet, hint::black_box, sync::Arc};
+use std::{collections::HashSet, hint::black_box};
 
 const NVIM_UI_FIXTURE: &[u8] =
   include_bytes!("fixtures/nvim_ui_notifications.bin");
@@ -368,20 +368,19 @@ fn bench_encode(c: &mut Criterion) {
   let mut group = c.benchmark_group("rpc/encode");
 
   group.bench_function("request", |b| {
-    let state = Arc::new(Mutex::new(EncodeState::new(sink())));
+    let state = Mutex::new(EncodeState::new(sink()));
     b.iter_batched(
       || request_msg.clone(),
-      |msg| black_box(block_on(encode_with_state(state.clone(), msg)).unwrap()),
+      |msg| black_box(block_on(encode_with_state(&state, msg)).unwrap()),
       BatchSize::SmallInput,
     );
   });
 
   group.bench_function("nvim_input_ctrl_d", |b| {
-    let state = Arc::new(Mutex::new(EncodeState::new(sink())));
+    let state = Mutex::new(EncodeState::new(sink()));
     b.iter(|| {
       black_box(
-        block_on(encode_nvim_input_with_state(state.clone(), 1, "<C-D>"))
-          .unwrap(),
+        block_on(encode_nvim_input_with_state(&state, 1, "<C-D>")).unwrap(),
       )
     });
   });

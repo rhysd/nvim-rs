@@ -49,7 +49,7 @@ macro_rules! call_args {
 
 type ResponseResult = Result<Result<Value, Value>, Arc<DecodeError>>;
 
-type Queue = Arc<Mutex<Vec<(u64, oneshot::Sender<ResponseResult>)>>>;
+type Queue = Mutex<Vec<(u64, oneshot::Sender<ResponseResult>)>>;
 
 enum HandlerMessage {
   RpcMessage(RpcMessage),
@@ -71,13 +71,20 @@ impl std::fmt::Debug for HandlerMessage {
 }
 
 /// An active Neovim session.
+pub(crate) struct NeovimInner<W>
+where
+  W: AsyncWrite + Send + Unpin + 'static,
+{
+  writer: Mutex<model::EncodeState<W>>,
+  queue: Queue,
+  msgid_counter: AtomicU64,
+}
+
 pub struct Neovim<W>
 where
   W: AsyncWrite + Send + Unpin + 'static,
 {
-  pub(crate) writer: Arc<Mutex<model::EncodeState<W>>>,
-  pub(crate) queue: Queue,
-  pub(crate) msgid_counter: Arc<AtomicU64>,
+  pub(crate) inner: Arc<NeovimInner<W>>,
 }
 
 impl<W> Clone for Neovim<W>
@@ -86,9 +93,7 @@ where
 {
   fn clone(&self) -> Self {
     Neovim {
-      writer: self.writer.clone(),
-      queue: self.queue.clone(),
-      msgid_counter: self.msgid_counter.clone(),
+      inner: self.inner.clone(),
     }
   }
 }
@@ -98,7 +103,7 @@ where
   W: AsyncWrite + Send + Unpin + 'static,
 {
   fn eq(&self, other: &Self) -> bool {
-    Arc::ptr_eq(&self.writer, &other.writer)
+    Arc::ptr_eq(&self.inner, &other.inner)
   }
 }
 impl<W> Eq for Neovim<W> where W: AsyncWrite + Send + Unpin + 'static {}
@@ -121,9 +126,11 @@ where
     H: Handler<Writer = W> + Spawner,
   {
     let req = Neovim {
-      writer: Arc::new(Mutex::new(model::EncodeState::new(writer))),
-      msgid_counter: Arc::new(AtomicU64::new(0)),
-      queue: Arc::new(Mutex::new(Vec::new())),
+      inner: Arc::new(NeovimInner {
+        writer: Mutex::new(model::EncodeState::new(writer)),
+        queue: Mutex::new(Vec::new()),
+        msgid_counter: AtomicU64::new(0),
+      }),
     };
 
     let (sender, receiver) = unbounded();
@@ -161,12 +168,14 @@ where
     H: Handler<Writer = W> + Spawner,
   {
     let instance = Neovim {
-      writer: Arc::new(Mutex::new(model::EncodeState::new(writer))),
-      msgid_counter: Arc::new(AtomicU64::new(0)),
-      queue: Arc::new(Mutex::new(Vec::new())),
+      inner: Arc::new(NeovimInner {
+        writer: Mutex::new(model::EncodeState::new(writer)),
+        queue: Mutex::new(Vec::new()),
+        msgid_counter: AtomicU64::new(0),
+      }),
     };
 
-    let msgid = instance.msgid_counter.fetch_add(1, Ordering::Relaxed);
+    let msgid = instance.inner.msgid_counter.fetch_add(1, Ordering::Relaxed);
     // Nvim encodes fixed size strings with a length of 20-31 bytes wrong, so
     // avoid that
     let msg_len = message.len();
@@ -181,7 +190,7 @@ where
       method: "nvim_exec_lua".to_owned(),
       params: call_args![format!("return '{message}'"), Vec::<Value>::new()],
     };
-    model::encode_with_state(instance.writer.clone(), req).await?;
+    model::encode_with_state(&instance.inner.writer, req).await?;
 
     let expected_resp = RpcMessage::RpcResponse {
       msgid,
@@ -238,7 +247,7 @@ where
     method: &str,
     args: Vec<Value>,
   ) -> Result<oneshot::Receiver<ResponseResult>, Box<EncodeError>> {
-    let msgid = self.msgid_counter.fetch_add(1, Ordering::Relaxed);
+    let msgid = self.inner.msgid_counter.fetch_add(1, Ordering::Relaxed);
 
     let req = RpcMessage::RpcRequest {
       msgid,
@@ -248,10 +257,9 @@ where
 
     let (sender, receiver) = oneshot::channel();
 
-    self.queue.lock().await.push((msgid, sender));
+    self.inner.queue.lock().await.push((msgid, sender));
 
-    let writer = self.writer.clone();
-    model::encode_with_state(writer, req).await?;
+    model::encode_with_state(&self.inner.writer, req).await?;
 
     Ok(receiver)
   }
@@ -260,13 +268,13 @@ where
     &self,
     keys: &str,
   ) -> Result<oneshot::Receiver<ResponseResult>, Box<EncodeError>> {
-    let msgid = self.msgid_counter.fetch_add(1, Ordering::Relaxed);
+    let msgid = self.inner.msgid_counter.fetch_add(1, Ordering::Relaxed);
     let (sender, receiver) = oneshot::channel();
 
-    self.queue.lock().await.push((msgid, sender));
+    self.inner.queue.lock().await.push((msgid, sender));
 
-    let writer = self.writer.clone();
-    model::encode_nvim_input_with_state(writer, msgid, keys).await?;
+    model::encode_nvim_input_with_state(&self.inner.writer, msgid, keys)
+      .await?;
 
     Ok(receiver)
   }
@@ -276,14 +284,13 @@ where
     method: &str,
     args: &[ValueRef<'_>],
   ) -> Result<oneshot::Receiver<ResponseResult>, Box<EncodeError>> {
-    let msgid = self.msgid_counter.fetch_add(1, Ordering::Relaxed);
+    let msgid = self.inner.msgid_counter.fetch_add(1, Ordering::Relaxed);
     let (sender, receiver) = oneshot::channel();
 
-    self.queue.lock().await.push((msgid, sender));
+    self.inner.queue.lock().await.push((msgid, sender));
 
-    let writer = self.writer.clone();
     model::encode_value_ref_with_state(
-      &writer,
+      &self.inner.writer,
       MessageType::Request(msgid),
       method,
       args,
@@ -339,7 +346,7 @@ where
     args: &[ValueRef<'_>],
   ) -> Result<(), Box<CallError>> {
     model::encode_value_ref_with_state(
-      &self.writer,
+      &self.inner.writer,
       MessageType::Notification,
       method,
       args,
@@ -403,7 +410,7 @@ where
           } => {
             let handler_c = handler.clone();
             let neovim = self.clone();
-            let writer = self.writer.clone();
+            let inner = self.inner.clone();
 
             handler.spawn(async move {
               let response =
@@ -420,7 +427,7 @@ where
                   },
                 };
 
-              model::encode_with_state(writer, response)
+              model::encode_with_state(&inner.writer, response)
                 .await
                 .unwrap_or_else(|e| {
                   error!(
@@ -454,7 +461,7 @@ where
       let msg = match Self::decode_next(&mut decoder, &mut reader).await {
         Ok(msg) => msg,
         Err(err) => {
-          let err = self.send_error_to_callers(&self.queue, err).await?;
+          let err = self.send_error_to_callers(&self.inner.queue, err).await?;
           return Err(Box::new(LoopError::DecodeError(err, None)));
         }
       };
@@ -466,7 +473,7 @@ where
           result,
           error,
         }) => {
-          let sender = find_sender(&self.queue, msgid).await?;
+          let sender = find_sender(&self.inner.queue, msgid).await?;
           if error == Value::Nil {
             sender
               .send(Ok(Ok(result)))
@@ -632,11 +639,11 @@ mod tests {
 
   fn test_neovim() -> Neovim<Cursor<Vec<u8>>> {
     Neovim {
-      writer: Arc::new(Mutex::new(model::EncodeState::new(Cursor::new(
-        Vec::new(),
-      )))),
-      queue: Arc::new(Mutex::new(Vec::new())),
-      msgid_counter: Arc::new(AtomicU64::new(0)),
+      inner: Arc::new(NeovimInner {
+        writer: Mutex::new(model::EncodeState::new(Cursor::new(Vec::new()))),
+        queue: Mutex::new(Vec::new()),
+        msgid_counter: AtomicU64::new(0),
+      }),
     }
   }
 
@@ -695,9 +702,9 @@ mod tests {
         .await
         .unwrap();
 
-      assert!(nvim.queue.lock().await.is_empty());
+      assert!(nvim.inner.queue.lock().await.is_empty());
 
-      let writer = nvim.writer.lock().await;
+      let writer = nvim.inner.writer.lock().await;
       assert_eq!(
         writer.get_ref().get_ref(),
         &encoded_value(Value::from(vec![
@@ -711,7 +718,7 @@ mod tests {
 
   #[tokio::test]
   async fn test_find_sender() {
-    let queue = Arc::new(Mutex::new(Vec::new()));
+    let queue = Mutex::new(Vec::new());
 
     {
       let (sender, _receiver) = oneshot::channel();
