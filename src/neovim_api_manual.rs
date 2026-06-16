@@ -113,15 +113,18 @@ where
       .map_err(|v| Box::new(CallError::WrongValueType(v)))
   }
 
+  #[inline]
   pub async fn notify_input(&self, keys: &str) -> Result<(), Box<CallError>> {
     self.notify_nvim_input(keys).await
   }
 
+  #[inline]
   pub async fn ui_set_focus(&self, gained: bool) -> Result<(), Box<CallError>> {
     let args = [ValueRef::Boolean(gained)];
     self.notify_value_ref("nvim_ui_set_focus", &args).await
   }
 
+  #[inline]
   pub async fn ui_try_resize(
     &self,
     width: i64,

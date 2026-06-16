@@ -22,7 +22,7 @@ use rmpv::{
   encode::{write_value, write_value_ref},
 };
 
-use crate::error::{DecodeError, EncodeError};
+use crate::error::{DecodeError, EncodeError, InvalidMessage};
 
 const DECODE_READ_BUFFER_SIZE: usize = 80 * 1024;
 const MSG_TYPE_REQUEST: u64 = 0;
@@ -86,10 +86,12 @@ impl DecodeState {
     }
   }
 
+  #[inline]
   pub fn has_rest(&self) -> bool {
     self.start < self.rest.len()
   }
 
+  #[inline]
   pub fn rest(&self) -> &[u8] {
     &self.rest[self.start..]
   }
@@ -115,6 +117,7 @@ impl DecodeState {
     }
   }
 
+  #[inline]
   pub fn take_rest(&mut self, consumed: usize) -> Bytes {
     self.compact_rest();
     self.rest.split_to(consumed).freeze()
@@ -145,11 +148,11 @@ impl DecodeState {
     }
   }
 
+  #[inline]
   fn compact_rest(&mut self) {
     if self.start == 0 {
       return;
     }
-
     let _ = self.rest.split_to(self.start);
     self.start = 0;
   }
@@ -181,10 +184,9 @@ struct EnvelopeReader<'a, R> {
 impl<'a, R: Read> EnvelopeReader<'a, R> {
   #[inline]
   fn new(reader: &'a mut R) -> Result<Self, Box<DecodeError>> {
-    let len = Self::read_len(reader)?;
     Ok(Self {
+      len: Self::read_len(reader)?,
       reader,
-      len,
       read: 0,
     })
   }
@@ -196,12 +198,10 @@ impl<'a, R: Read> EnvelopeReader<'a, R> {
 
   #[inline]
   fn require_len(&self, expected: u64) -> Result<(), Box<DecodeError>> {
-    use crate::error::InvalidMessage::*;
-
     if self.len < expected {
-      return Err(WrongArrayLength(expected..=expected, self.len).into());
+      let err = InvalidMessage::WrongArrayLength(expected..=expected, self.len);
+      return Err(err.into());
     }
-
     Ok(())
   }
 
@@ -217,11 +217,11 @@ impl<'a, R: Read> EnvelopeReader<'a, R> {
     &mut self,
     method: &str,
   ) -> Result<Vec<Value>, Box<DecodeError>> {
-    use crate::error::InvalidMessage::*;
-
     match self.read_value_array()? {
       Ok(params) => Ok(params),
-      Err(value) => Err(InvalidParams(value, method.to_owned()).into()),
+      Err(value) => {
+        Err(InvalidMessage::InvalidParams(value, method.to_owned()).into())
+      }
     }
   }
 
@@ -231,17 +231,15 @@ impl<'a, R: Read> EnvelopeReader<'a, R> {
       read_value(self.reader)?;
       self.read += 1;
     }
-
     Ok(())
   }
 
   fn read_len(reader: &mut R) -> Result<u64, Box<DecodeError>> {
-    use crate::error::InvalidMessage::*;
-
     match rmp::decode::read_array_len(reader) {
       Ok(len) => Ok(u64::from(len)),
       Err(ValueReadError::TypeMismatch(marker)) => {
-        Err(NotAnArray(read_value_from_marker(reader, marker)?).into())
+        let value = read_value_from_marker(reader, marker)?;
+        Err(InvalidMessage::NotAnArray(value).into())
       }
       Err(err) => Err(rmpv::decode::Error::from(err).into()),
     }
@@ -355,6 +353,7 @@ impl RpcMessage {
   }
 }
 
+#[inline]
 fn read_value_from_marker<R: Read>(
   reader: &mut R,
   marker: Marker,
@@ -364,6 +363,7 @@ fn read_value_from_marker<R: Read>(
   read_value(&mut value_reader).map_err(Into::into)
 }
 
+#[inline]
 fn write_value_array<W: Write>(
   writer: &mut W,
   values: &[Value],
@@ -372,7 +372,6 @@ fn write_value_array<W: Write>(
   for value in values {
     write_value(writer, value)?;
   }
-
   Ok(())
 }
 
@@ -417,6 +416,7 @@ pub fn encode_sync<W: Write>(
 
 /// Encode an `nvim_input` request or notification without building an owned
 /// [`RpcMessage`].
+#[inline]
 pub fn encode_nvim_input_sync<W: Write>(
   writer: &mut W,
   message_type: MessageType,
@@ -426,10 +426,10 @@ pub fn encode_nvim_input_sync<W: Write>(
   write_str(writer, "nvim_input")?;
   write_array_len(writer, 1)?;
   write_str(writer, keys)?;
-
   Ok(())
 }
 
+#[inline]
 fn write_message_header<W: Write>(
   writer: &mut W,
   message_type: MessageType,
@@ -445,10 +445,10 @@ fn write_message_header<W: Write>(
       write_uint(writer, MSG_TYPE_NOTIFICATION)?;
     }
   }
-
   Ok(())
 }
 
+#[inline]
 fn write_message_value_ref<W: Write>(
   writer: &mut W,
   message_type: MessageType,
@@ -461,7 +461,6 @@ fn write_message_value_ref<W: Write>(
   for arg in args {
     write_value_ref(writer, arg)?;
   }
-
   Ok(())
 }
 
@@ -472,6 +471,7 @@ pub struct EncodeState<W> {
 }
 
 impl<W> EncodeState<W> {
+  #[inline]
   #[must_use]
   pub fn new(writer: W) -> Self {
     Self {
@@ -480,18 +480,21 @@ impl<W> EncodeState<W> {
     }
   }
 
+  #[inline]
   #[must_use]
   pub fn into_inner(self) -> W {
     self.writer
   }
 
+  #[inline]
   #[must_use]
-  pub fn get_ref(&self) -> &W {
+  pub fn writer(&self) -> &W {
     &self.writer
   }
 
+  #[inline]
   #[must_use]
-  pub fn get_mut(&mut self) -> &mut W {
+  pub fn writer_mut(&mut self) -> &mut W {
     &mut self.writer
   }
 }

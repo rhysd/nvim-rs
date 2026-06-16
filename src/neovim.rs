@@ -725,7 +725,7 @@ mod tests {
 
       let writer = nvim.inner.writer.lock().await;
       assert_eq!(
-        writer.get_ref().get_ref(),
+        writer.writer().get_ref(),
         &encoded_value(Value::from(vec![
           Value::from(2),
           Value::from("nvim_ui_set_focus"),

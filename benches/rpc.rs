@@ -273,94 +273,29 @@ fn selected_ui_inputs(captured: &[CapturedMessage]) -> Vec<BenchInput> {
   let mut selected = Vec::new();
   let mut used = HashSet::new();
 
-  push_ui_input(
-    &mut selected,
-    &mut used,
-    captured,
-    "nvim_ui_initial_redraw",
-    (!captured.is_empty()).then_some(0),
-  );
-  let index = first_unused_ui_input(captured, &used, |msg| {
-    msg.event_names.iter().any(|event| event == "grid_resize")
-  });
-  push_ui_input(
-    &mut selected,
-    &mut used,
-    captured,
-    "nvim_ui_grid_resize",
-    index,
-  );
+  let mut select_unused = |name: &str, want: &[&str]| {
+    let index = captured.iter().enumerate().position(|(index, msg)| {
+      !used.contains(&index)
+        && msg
+          .event_names
+          .iter()
+          .any(|name| want.contains(&name.as_str()))
+    });
+    if let Some(index) = index.filter(|&i| used.insert(i)) {
+      selected.push(BenchInput {
+        name: name.to_string(),
+        bytes: captured[index].bytes.clone(),
+      });
+    }
+  };
 
-  let index = first_unused_ui_input(captured, &used, |msg| {
-    msg.event_names.iter().any(|event| event == "grid_line")
-  });
-  push_ui_input(
-    &mut selected,
-    &mut used,
-    captured,
-    "nvim_ui_grid_line",
-    index,
-  );
-
-  let index = first_unused_ui_input(captured, &used, |msg| {
-    msg
-      .event_names
-      .iter()
-      .any(|event| event == "msg_show" || event == "cmdline_show")
-  });
-  push_ui_input(&mut selected, &mut used, captured, "nvim_ui_message", index);
-
-  let index = largest_unused_ui_input(captured, &used);
-  push_ui_input(
-    &mut selected,
-    &mut used,
-    captured,
-    "nvim_ui_largest_redraw",
-    index,
-  );
+  select_unused("nvim_ui_default_colors_set", &["default_colors_set"]);
+  select_unused("nvim_ui_grid_resize", &["grid_resize"]);
+  select_unused("nvim_ui_grid_line", &["grid_line"]);
+  select_unused("nvim_ui_message", &["msg_show", "cmdline_show"]);
+  select_unused("show_message", &["msg_show", "cmdline_show"]);
 
   selected
-}
-
-fn push_ui_input(
-  selected: &mut Vec<BenchInput>,
-  used: &mut HashSet<usize>,
-  captured: &[CapturedMessage],
-  name: &str,
-  index: Option<usize>,
-) {
-  let Some(index) = index else {
-    return;
-  };
-  if used.insert(index) {
-    selected.push(BenchInput {
-      name: name.to_owned(),
-      bytes: captured[index].bytes.clone(),
-    });
-  }
-}
-
-fn first_unused_ui_input(
-  captured: &[CapturedMessage],
-  used: &HashSet<usize>,
-  pred: impl Fn(&CapturedMessage) -> bool,
-) -> Option<usize> {
-  captured
-    .iter()
-    .enumerate()
-    .position(|(index, msg)| !used.contains(&index) && pred(msg))
-}
-
-fn largest_unused_ui_input(
-  captured: &[CapturedMessage],
-  used: &HashSet<usize>,
-) -> Option<usize> {
-  captured
-    .iter()
-    .enumerate()
-    .filter(|(index, _)| !used.contains(index))
-    .max_by_key(|(_, msg)| msg.bytes.len())
-    .map(|(index, _)| index)
 }
 
 fn bench_encode(c: &mut Criterion) {

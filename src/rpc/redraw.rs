@@ -52,6 +52,7 @@ impl From<RedrawDecodeError> for Box<LoopError> {
 }
 
 impl From<io::Error> for RedrawDecodeError {
+  #[inline]
   fn from(err: io::Error) -> Self {
     if err.kind() == ErrorKind::UnexpectedEof {
       Self::Incomplete
@@ -62,6 +63,7 @@ impl From<io::Error> for RedrawDecodeError {
 }
 
 impl From<BytesReadError> for RedrawDecodeError {
+  #[inline]
   fn from(err: BytesReadError) -> Self {
     match err {
       BytesReadError::InsufficientBytes { .. } => Self::Incomplete,
@@ -107,6 +109,7 @@ impl From<NumValueReadError<BytesReadError>> for RedrawDecodeError {
 }
 
 impl From<DecodeStringError<'_, BytesReadError>> for RedrawDecodeError {
+  #[inline]
   fn from(err: DecodeStringError<'_, BytesReadError>) -> Self {
     match err {
       DecodeStringError::InvalidMarkerRead(err)
@@ -194,11 +197,13 @@ impl RedrawFrameInfo {
     }))
   }
 
+  #[inline]
   #[must_use]
   pub fn consumed(&self) -> usize {
     self.consumed
   }
 
+  #[inline]
   pub fn frame(&self, bytes: bytes::Bytes) -> RedrawFrame {
     debug_assert_eq!(bytes.len(), self.consumed);
     RedrawFrame {
@@ -229,14 +234,17 @@ impl RedrawFrame {
     Ok(info.frame(bytes))
   }
 
+  #[inline]
   pub fn consumed(&self) -> usize {
     self.bytes.len()
   }
 
+  #[inline]
   pub fn as_bytes(&self) -> &[u8] {
     &self.bytes
   }
 
+  #[inline]
   pub fn notification(&self) -> RedrawDecodeResult<RedrawNotification<'_>> {
     Ok(RedrawNotification::new(ArrayReader {
       reader: MsgpackReader {
@@ -254,30 +262,37 @@ pub struct RawMsgpack<'de> {
 }
 
 impl<'de> RawMsgpack<'de> {
+  #[inline]
   pub fn as_bytes(&self) -> &'de [u8] {
     self.bytes
   }
 
+  #[inline]
   pub fn as_str(&self) -> RedrawDecodeResult<&'de str> {
     Ok(decode::read_str_from_slice(self.bytes)?.0)
   }
 
+  #[inline]
   pub fn as_i64(&self) -> RedrawDecodeResult<i64> {
     Ok(decode::read_int::<i64, _>(&mut Bytes::new(self.bytes))?)
   }
 
+  #[inline]
   pub fn as_u64(&self) -> RedrawDecodeResult<u64> {
     Ok(decode::read_int::<u64, _>(&mut Bytes::new(self.bytes))?)
   }
 
+  #[inline]
   pub fn as_bool(&self) -> RedrawDecodeResult<bool> {
     Ok(decode::read_bool(&mut Bytes::new(self.bytes))?)
   }
 
+  #[inline]
   pub fn as_f32(&self) -> RedrawDecodeResult<f32> {
     Ok(decode::read_f32(&mut Bytes::new(self.bytes))?)
   }
 
+  #[inline]
   pub fn as_f64(&self) -> RedrawDecodeResult<f64> {
     Ok(decode::read_f64(&mut Bytes::new(self.bytes))?)
   }
@@ -289,11 +304,13 @@ pub struct RedrawNotification<'de> {
 }
 
 impl<'de> RedrawNotification<'de> {
+  #[inline]
   #[must_use]
   pub(crate) fn new(params: ArrayReader<'de>) -> Self {
     Self { params }
   }
 
+  #[inline]
   #[must_use]
   pub fn batch_count(&self) -> u32 {
     self.params.remaining()
@@ -339,21 +356,25 @@ pub struct ArrayReader<'de> {
 }
 
 impl<'de> ArrayReader<'de> {
+  #[inline]
   pub fn new(input: &'de [u8]) -> RedrawDecodeResult<Self> {
     let mut reader = MsgpackReader::new(input);
     reader.read_array_reader()
   }
 
+  #[inline]
   #[must_use]
   pub fn remaining(&self) -> u32 {
     self.remaining
   }
 
+  #[inline]
   #[must_use]
   pub fn is_empty(&self) -> bool {
     self.remaining == 0
   }
 
+  #[inline]
   pub fn read_str(&mut self) -> RedrawDecodeResult<&'de str> {
     self.ensure_remaining()?;
     let value = self.reader.read_str()?;
@@ -361,6 +382,7 @@ impl<'de> ArrayReader<'de> {
     Ok(value)
   }
 
+  #[inline]
   pub fn read_u64(&mut self) -> RedrawDecodeResult<u64> {
     self.ensure_remaining()?;
     let value = self.reader.read_u64()?;
@@ -368,6 +390,7 @@ impl<'de> ArrayReader<'de> {
     Ok(value)
   }
 
+  #[inline]
   pub fn read_i64(&mut self) -> RedrawDecodeResult<i64> {
     self.ensure_remaining()?;
     let value = self.reader.read_i64()?;
@@ -375,6 +398,7 @@ impl<'de> ArrayReader<'de> {
     Ok(value)
   }
 
+  #[inline]
   pub fn read_bool(&mut self) -> RedrawDecodeResult<bool> {
     self.ensure_remaining()?;
     let value = self.reader.read_bool()?;
@@ -382,6 +406,7 @@ impl<'de> ArrayReader<'de> {
     Ok(value)
   }
 
+  #[inline]
   pub fn read_f32(&mut self) -> RedrawDecodeResult<f32> {
     self.ensure_remaining()?;
     let value = self.reader.read_f32()?;
@@ -389,6 +414,7 @@ impl<'de> ArrayReader<'de> {
     Ok(value)
   }
 
+  #[inline]
   pub fn read_f64(&mut self) -> RedrawDecodeResult<f64> {
     self.ensure_remaining()?;
     let value = self.reader.read_f64()?;
@@ -396,6 +422,7 @@ impl<'de> ArrayReader<'de> {
     Ok(value)
   }
 
+  #[inline]
   pub fn read_as_string(&mut self) -> RedrawDecodeResult<Option<String>> {
     self.ensure_remaining()?;
     let value = self.reader.read_as_string()?;
@@ -403,6 +430,7 @@ impl<'de> ArrayReader<'de> {
     Ok(value)
   }
 
+  #[inline]
   pub fn read_array<T>(
     &mut self,
     f: impl FnOnce(&mut ArrayReader<'de>) -> RedrawDecodeResult<T>,
@@ -442,6 +470,7 @@ impl<'de> ArrayReader<'de> {
     Ok(value)
   }
 
+  #[inline]
   pub fn read_raw_value(&mut self) -> RedrawDecodeResult<RawMsgpack<'de>> {
     self.ensure_remaining()?;
     let value = self.reader.read_raw_value()?;
@@ -449,6 +478,7 @@ impl<'de> ArrayReader<'de> {
     Ok(value)
   }
 
+  #[inline]
   pub fn skip_next(&mut self) -> RedrawDecodeResult<()> {
     self.ensure_remaining()?;
     self.reader.skip_value()?;
@@ -456,14 +486,15 @@ impl<'de> ArrayReader<'de> {
     Ok(())
   }
 
+  #[inline]
   pub fn skip_remaining(&mut self) -> RedrawDecodeResult<()> {
     while self.remaining > 0 {
       self.skip_next()?;
     }
-
     Ok(())
   }
 
+  #[inline]
   fn take_remaining(&mut self) -> Self {
     let remaining = self.remaining;
     self.remaining = 0;
@@ -473,12 +504,13 @@ impl<'de> ArrayReader<'de> {
     }
   }
 
+  #[inline]
   fn ensure_remaining(&self) -> RedrawDecodeResult<()> {
-    if self.remaining == 0 {
-      return Err(RedrawDecodeError::Incomplete);
+    if self.remaining != 0 {
+      Ok(())
+    } else {
+      Err(RedrawDecodeError::Incomplete)
     }
-
-    Ok(())
   }
 }
 
@@ -490,16 +522,19 @@ pub struct MapReader<'de> {
 }
 
 impl<'de> MapReader<'de> {
+  #[inline]
   #[must_use]
   pub fn remaining(&self) -> u32 {
     self.remaining
   }
 
+  #[inline]
   #[must_use]
   pub fn is_empty(&self) -> bool {
     self.remaining == 0
   }
 
+  #[inline]
   pub fn read_raw_pair(
     &mut self,
   ) -> RedrawDecodeResult<(RawMsgpack<'de>, RawMsgpack<'de>)> {
@@ -518,6 +553,7 @@ impl<'de> MapReader<'de> {
     Ok((key, value))
   }
 
+  #[inline]
   pub fn skip_next(&mut self) -> RedrawDecodeResult<()> {
     self.ensure_remaining()?;
     self.reader.skip_value()?;
@@ -526,20 +562,21 @@ impl<'de> MapReader<'de> {
     Ok(())
   }
 
+  #[inline]
   pub fn skip_remaining(&mut self) -> RedrawDecodeResult<()> {
     while self.remaining > 0 {
       self.skip_next()?;
     }
-
     Ok(())
   }
 
+  #[inline]
   fn ensure_remaining(&self) -> RedrawDecodeResult<()> {
-    if self.remaining == 0 {
-      return Err(RedrawDecodeError::Incomplete);
+    if self.remaining != 0 {
+      Ok(())
+    } else {
+      Err(RedrawDecodeError::Incomplete)
     }
-
-    Ok(())
   }
 }
 
@@ -550,14 +587,17 @@ struct MsgpackReader<'de> {
 }
 
 impl<'de> MsgpackReader<'de> {
+  #[inline]
   fn new(input: &'de [u8]) -> Self {
     Self { input, position: 0 }
   }
 
+  #[inline]
   fn remaining_slice(&self) -> &'de [u8] {
     &self.input[self.position..]
   }
 
+  #[inline]
   fn read_rmp<T, E>(
     &mut self,
     read: impl FnOnce(&mut Bytes<'de>) -> Result<T, E>,
@@ -589,30 +629,37 @@ impl<'de> MsgpackReader<'de> {
     }
   }
 
+  #[inline]
   fn read_u64(&mut self) -> RedrawDecodeResult<u64> {
     Ok(self.read_rmp(decode::read_int::<u64, _>)?)
   }
 
+  #[inline]
   fn read_i64(&mut self) -> RedrawDecodeResult<i64> {
     Ok(self.read_rmp(decode::read_int::<i64, _>)?)
   }
 
+  #[inline]
   fn read_bool(&mut self) -> RedrawDecodeResult<bool> {
     Ok(self.read_rmp(decode::read_bool)?)
   }
 
+  #[inline]
   fn read_f32(&mut self) -> RedrawDecodeResult<f32> {
     Ok(self.read_rmp(decode::read_f32)?)
   }
 
+  #[inline]
   fn read_f64(&mut self) -> RedrawDecodeResult<f64> {
     Ok(self.read_rmp(decode::read_f64)?)
   }
 
+  #[inline]
   fn read_array_len(&mut self) -> RedrawDecodeResult<u32> {
     Ok(self.read_rmp(decode::read_array_len)?)
   }
 
+  #[inline]
   fn read_array_reader(&mut self) -> RedrawDecodeResult<ArrayReader<'de>> {
     self.read_array_len().map(|remaining| ArrayReader {
       reader: self.clone(),
@@ -620,6 +667,7 @@ impl<'de> MsgpackReader<'de> {
     })
   }
 
+  #[inline]
   fn read_map_reader(&mut self) -> RedrawDecodeResult<MapReader<'de>> {
     let remaining = self.read_rmp(decode::read_map_len)?;
     Ok(MapReader {
@@ -635,12 +683,12 @@ impl<'de> MsgpackReader<'de> {
     Ok(value)
   }
 
+  #[inline]
   fn read_raw_value(&mut self) -> RedrawDecodeResult<RawMsgpack<'de>> {
     let start = self.position;
     self.skip_value()?;
-    Ok(RawMsgpack {
-      bytes: &self.input[start..self.position],
-    })
+    let bytes = &self.input[start..self.position];
+    Ok(RawMsgpack { bytes })
   }
 
   fn read_as_string(&mut self) -> RedrawDecodeResult<Option<String>> {
@@ -755,58 +803,68 @@ impl<'de> MsgpackReader<'de> {
     }
   }
 
+  #[inline]
   fn skip_values(&mut self, count: u32) -> RedrawDecodeResult<()> {
     for _ in 0..count {
       self.skip_value()?;
     }
-
     Ok(())
   }
 
+  #[inline]
   fn skip_map_values(&mut self, len: u32) -> RedrawDecodeResult<()> {
     let count = len.checked_mul(2).ok_or_else(|| {
       RedrawDecodeError::Invalid("msgpack map length is too large".to_owned())
     })?;
-
     self.skip_values(count)
   }
 
+  #[inline]
   fn read_data_u8(&mut self) -> RedrawDecodeResult<u8> {
     Ok(self.read_rmp(RmpRead::read_data_u8)?)
   }
 
+  #[inline]
   fn read_data_u16(&mut self) -> RedrawDecodeResult<u16> {
     Ok(self.read_rmp(RmpRead::read_data_u16)?)
   }
 
+  #[inline]
   fn read_data_u32(&mut self) -> RedrawDecodeResult<u32> {
     Ok(self.read_rmp(RmpRead::read_data_u32)?)
   }
 
+  #[inline]
   fn read_data_u64(&mut self) -> RedrawDecodeResult<u64> {
     Ok(self.read_rmp(RmpRead::read_data_u64)?)
   }
 
+  #[inline]
   fn read_data_i8(&mut self) -> RedrawDecodeResult<i8> {
     Ok(self.read_rmp(RmpRead::read_data_i8)?)
   }
 
+  #[inline]
   fn read_data_i16(&mut self) -> RedrawDecodeResult<i16> {
     Ok(self.read_rmp(RmpRead::read_data_i16)?)
   }
 
+  #[inline]
   fn read_data_i32(&mut self) -> RedrawDecodeResult<i32> {
     Ok(self.read_rmp(RmpRead::read_data_i32)?)
   }
 
+  #[inline]
   fn read_data_i64(&mut self) -> RedrawDecodeResult<i64> {
     Ok(self.read_rmp(RmpRead::read_data_i64)?)
   }
 
+  #[inline]
   fn read_data_f32(&mut self) -> RedrawDecodeResult<f32> {
     Ok(self.read_rmp(RmpRead::read_data_f32)?)
   }
 
+  #[inline]
   fn read_data_f64(&mut self) -> RedrawDecodeResult<f64> {
     Ok(self.read_rmp(RmpRead::read_data_f64)?)
   }
@@ -823,6 +881,7 @@ impl<'de> MsgpackReader<'de> {
     Ok(())
   }
 
+  #[inline]
   fn skip_ext_payload(&mut self, data_len: usize) -> RedrawDecodeResult<()> {
     self.skip_bytes(1 + data_len)
   }
