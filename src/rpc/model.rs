@@ -177,8 +177,8 @@ fn try_decode_slice(
 
 struct EnvelopeReader<'a, R> {
   reader: &'a mut R,
-  len: u64,
-  read: u64,
+  len: u32,
+  read: u32,
 }
 
 impl<'a, R: Read> EnvelopeReader<'a, R> {
@@ -192,14 +192,16 @@ impl<'a, R: Read> EnvelopeReader<'a, R> {
   }
 
   #[inline]
-  fn len(&self) -> u64 {
+  fn len(&self) -> u32 {
     self.len
   }
 
   #[inline]
-  fn require_len(&self, expected: u64) -> Result<(), Box<DecodeError>> {
+  fn require_len(&self, expected: u32) -> Result<(), Box<DecodeError>> {
     if self.len < expected {
-      let err = InvalidMessage::WrongArrayLength(expected..=expected, self.len);
+      let expected = expected as u64;
+      let err =
+        InvalidMessage::WrongArrayLength(expected..=expected, self.len as _);
       return Err(err.into());
     }
     Ok(())
@@ -234,9 +236,9 @@ impl<'a, R: Read> EnvelopeReader<'a, R> {
     Ok(())
   }
 
-  fn read_len(reader: &mut R) -> Result<u64, Box<DecodeError>> {
+  fn read_len(reader: &mut R) -> Result<u32, Box<DecodeError>> {
     match rmp::decode::read_array_len(reader) {
-      Ok(len) => Ok(u64::from(len)),
+      Ok(len) => Ok(len),
       Err(ValueReadError::TypeMismatch(marker)) => {
         let value = read_value_from_marker(reader, marker)?;
         Err(InvalidMessage::NotAnArray(value).into())
@@ -277,7 +279,7 @@ impl RpcMessage {
 
     let mut fields = EnvelopeReader::new(reader)?;
     if fields.len() == 0 {
-      return Err(WrongArrayLength(3..=4, fields.len()).into());
+      return Err(WrongArrayLength(3..=4, fields.len() as _).into());
     }
 
     let msgtyp: u64 = fields.read_value()?.try_into().map_err(InvalidType)?;
