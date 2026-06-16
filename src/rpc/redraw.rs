@@ -2,7 +2,7 @@
 
 use std::{
   fmt::Debug,
-  io::{self, Cursor, ErrorKind},
+  io::{self, ErrorKind},
   sync::Arc,
 };
 
@@ -13,7 +13,6 @@ use rmp::{
     bytes::BytesReadError,
   },
 };
-use rmpv::{Value, decode::read_value};
 
 use crate::error::{DecodeError, LoopError};
 
@@ -463,13 +462,6 @@ impl<'de> ArrayReader<'de> {
     Ok(value)
   }
 
-  pub fn read_value(&mut self) -> RedrawDecodeResult<Value> {
-    self.ensure_remaining()?;
-    let value = self.reader.read_value()?;
-    self.remaining -= 1;
-    Ok(value)
-  }
-
   #[inline]
   pub fn read_raw_value(&mut self) -> RedrawDecodeResult<RawMsgpack<'de>> {
     self.ensure_remaining()?;
@@ -541,14 +533,6 @@ impl<'de> MapReader<'de> {
     self.ensure_remaining()?;
     let key = self.reader.read_raw_value()?;
     let value = self.reader.read_raw_value()?;
-    self.remaining -= 1;
-    Ok((key, value))
-  }
-
-  pub fn read_value_pair(&mut self) -> RedrawDecodeResult<(Value, Value)> {
-    self.ensure_remaining()?;
-    let key = self.reader.read_value()?;
-    let value = self.reader.read_value()?;
     self.remaining -= 1;
     Ok((key, value))
   }
@@ -674,13 +658,6 @@ impl<'de> MsgpackReader<'de> {
       reader: self.clone(),
       remaining,
     })
-  }
-
-  fn read_value(&mut self) -> RedrawDecodeResult<Value> {
-    let mut cursor = Cursor::new(&self.input[self.position..]);
-    let value = read_value(&mut cursor)?;
-    self.position += cursor.position() as usize;
-    Ok(value)
   }
 
   #[inline]
@@ -890,12 +867,20 @@ impl<'de> MsgpackReader<'de> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use rmpv::encode::write_value;
+  use rmpv::{Value, decode::read_value, encode::write_value};
 
   fn encode_value(value: Value) -> Vec<u8> {
     let mut bytes = Vec::new();
     write_value(&mut bytes, &value).unwrap();
     bytes
+  }
+
+  #[track_caller]
+  fn decode_raw_value(raw: RawMsgpack<'_>) -> Value {
+    let mut input = raw.as_bytes();
+    let value = read_value(&mut input).unwrap();
+    assert!(input.is_empty());
+    value
   }
 
   fn redraw_notification(params: Vec<Value>) -> Vec<u8> {
@@ -1320,9 +1305,7 @@ mod tests {
       .for_each_batch(|batch| {
         while !batch.args.is_empty() {
           let payload = batch.args.read_raw_value()?;
-          let mut input = payload.as_bytes();
-          payloads.push(read_value(&mut input)?);
-          assert!(input.is_empty());
+          payloads.push(decode_raw_value(payload));
         }
         Ok(true)
       })
@@ -1471,9 +1454,9 @@ mod tests {
         while !batch.args.is_empty() {
           batch.args.read_array(|args| {
             args.read_map(|map| {
-              let (key, value) = map.read_value_pair()?;
-              assert_eq!(key, Value::from("k"));
-              assert_eq!(value, Value::from(1));
+              let (key, value) = map.read_raw_pair()?;
+              assert_eq!(decode_raw_value(key), Value::from("k"));
+              assert_eq!(decode_raw_value(value), Value::from(1));
               Ok(())
             })
           })?;
@@ -1489,8 +1472,8 @@ mod tests {
     let mut reader = MsgpackReader::new(&bytes);
     let mut array = reader.read_array_reader().unwrap();
 
-    assert_eq!(array.read_value().unwrap(), Value::from("value"));
-    assert_reader_error_kind(array.read_value(), ErrorKind::UnexpectedEof);
+    assert_eq!(array.read_raw_value().unwrap().as_str().unwrap(), "value");
+    assert_reader_error_kind(array.read_raw_value(), ErrorKind::UnexpectedEof);
   }
 
   #[test]
@@ -1531,10 +1514,8 @@ mod tests {
     assert!(!map.is_empty());
 
     let (key, value) = map.read_raw_pair().unwrap();
-    let mut key_bytes = key.as_bytes();
-    let mut value_bytes = value.as_bytes();
-    assert_eq!(read_value(&mut key_bytes).unwrap(), Value::from("k1"));
-    assert_eq!(read_value(&mut value_bytes).unwrap(), Value::from(1));
+    assert_eq!(decode_raw_value(key), Value::from("k1"));
+    assert_eq!(decode_raw_value(value), Value::from(1));
 
     map.skip_next().unwrap();
     assert!(map.is_empty());
@@ -1684,7 +1665,7 @@ mod tests {
 
     let truncated_value = [Marker::Str8.to_u8(), 2, b'a'];
     let mut reader = MsgpackReader::new(&truncated_value);
-    assert!(reader.read_value().is_err());
+    assert!(reader.read_raw_value().is_err());
 
     let mut reader = MsgpackReader::new(&[]);
     assert_reader_error_kind(
