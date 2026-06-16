@@ -11,15 +11,14 @@ use futures::{
 use navy_nvim_rs::rpc::{
   model::{
     DecodeState, EncodeState, MessageType, RpcMessage,
-    encode_nvim_input_with_state, encode_sync, encode_value_ref_with_state,
-    encode_with_state,
+    encode_nvim_input_with_state, encode_sync, encode_with_state,
   },
   redraw::{
     RedrawDecodeError, RedrawDecodeResult, RedrawFrame, RedrawFrameInfo,
     RedrawNotification,
   },
 };
-use rmpv::{Value, ValueRef, decode::read_value};
+use rmpv::{Value, decode::read_value};
 use std::{collections::HashSet, hint::black_box};
 
 const NVIM_UI_FIXTURE: &[u8] =
@@ -380,19 +379,22 @@ fn bench_encode(c: &mut Criterion) {
   group.bench_function("nvim_input_ctrl_d", |b| {
     let state = Mutex::new(EncodeState::new(sink()));
     b.iter(|| {
-      block_on(encode_nvim_input_with_state(&state, 1, "<C-D>")).unwrap()
+      block_on(encode_nvim_input_with_state(
+        &state,
+        MessageType::Request(1),
+        "<C-D>",
+      ))
+      .unwrap()
     });
   });
 
   group.bench_function("nvim_input_ctrl_d_notify", |b| {
     let state = Mutex::new(EncodeState::new(sink()));
     b.iter(|| {
-      let args = [ValueRef::from("<C-D>")];
-      block_on(encode_value_ref_with_state(
+      block_on(encode_nvim_input_with_state(
         &state,
         MessageType::Notification,
-        "nvim_input",
-        &args,
+        "<C-D>",
       ))
       .unwrap()
     });

@@ -273,8 +273,12 @@ where
 
     self.inner.queue.lock().await.push((msgid, sender));
 
-    model::encode_nvim_input_with_state(&self.inner.writer, msgid, keys)
-      .await?;
+    model::encode_nvim_input_with_state(
+      &self.inner.writer,
+      MessageType::Request(msgid),
+      keys,
+    )
+    .await?;
 
     Ok(receiver)
   }
@@ -325,6 +329,21 @@ where
       .map_err(|e| CallError::SendError(*e, METHOD.to_owned()))?;
 
     receive_response(receiver, METHOD).await
+  }
+
+  pub(crate) async fn notify_nvim_input(
+    &self,
+    keys: &str,
+  ) -> Result<(), Box<CallError>> {
+    const METHOD: &str = "nvim_input";
+
+    model::encode_nvim_input_with_state(
+      &self.inner.writer,
+      MessageType::Notification,
+      keys,
+    )
+    .await
+    .map_err(|e| Box::new(CallError::SendError(*e, METHOD.to_owned())))
   }
 
   pub async fn call_value_ref(

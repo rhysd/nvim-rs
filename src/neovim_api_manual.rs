@@ -105,7 +105,7 @@ where
     )
   }
 
-  pub async fn input(&self, keys: &str) -> Result<i64, Box<CallError>> {
+  pub async fn request_input(&self, keys: &str) -> Result<i64, Box<CallError>> {
     self
       .call_nvim_input(keys)
       .await??
@@ -114,43 +114,15 @@ where
   }
 
   pub async fn notify_input(&self, keys: &str) -> Result<(), Box<CallError>> {
-    let args = [ValueRef::from(keys)];
-    self.notify_value_ref("nvim_input", &args).await
+    self.notify_nvim_input(keys).await
   }
 
   pub async fn ui_set_focus(&self, gained: bool) -> Result<(), Box<CallError>> {
-    let args = [ValueRef::Boolean(gained)];
-
-    self
-      .call_value_ref("nvim_ui_set_focus", &args)
-      .await??
-      .try_unpack()
-      .map_err(|v| Box::new(CallError::WrongValueType(v)))
-  }
-
-  pub async fn notify_ui_set_focus(
-    &self,
-    gained: bool,
-  ) -> Result<(), Box<CallError>> {
     let args = [ValueRef::Boolean(gained)];
     self.notify_value_ref("nvim_ui_set_focus", &args).await
   }
 
   pub async fn ui_try_resize(
-    &self,
-    width: i64,
-    height: i64,
-  ) -> Result<(), Box<CallError>> {
-    let args = [ValueRef::from(width), ValueRef::from(height)];
-
-    self
-      .call_value_ref("nvim_ui_try_resize", &args)
-      .await??
-      .try_unpack()
-      .map_err(|v| Box::new(CallError::WrongValueType(v)))
-  }
-
-  pub async fn notify_ui_try_resize(
     &self,
     width: i64,
     height: i64,

@@ -415,15 +415,14 @@ pub fn encode_sync<W: Write>(
   Ok(())
 }
 
-/// Encode an `nvim_input` request without building an owned [`RpcMessage`].
+/// Encode an `nvim_input` request or notification without building an owned
+/// [`RpcMessage`].
 pub fn encode_nvim_input_sync<W: Write>(
   writer: &mut W,
-  msgid: u64,
+  message_type: MessageType,
   keys: &str,
 ) -> Result<(), Box<EncodeError>> {
-  write_array_len(writer, 4)?;
-  write_uint(writer, MSG_TYPE_REQUEST)?;
-  write_uint(writer, msgid)?;
+  write_message_header(writer, message_type)?;
   write_str(writer, "nvim_input")?;
   write_array_len(writer, 1)?;
   write_str(writer, keys)?;
@@ -431,11 +430,9 @@ pub fn encode_nvim_input_sync<W: Write>(
   Ok(())
 }
 
-fn write_message_value_ref<W: Write>(
+fn write_message_header<W: Write>(
   writer: &mut W,
   message_type: MessageType,
-  method: &str,
-  args: &[ValueRef<'_>],
 ) -> Result<(), Box<EncodeError>> {
   match message_type {
     MessageType::Request(msgid) => {
@@ -448,6 +445,17 @@ fn write_message_value_ref<W: Write>(
       write_uint(writer, MSG_TYPE_NOTIFICATION)?;
     }
   }
+
+  Ok(())
+}
+
+fn write_message_value_ref<W: Write>(
+  writer: &mut W,
+  message_type: MessageType,
+  method: &str,
+  args: &[ValueRef<'_>],
+) -> Result<(), Box<EncodeError>> {
+  write_message_header(writer, message_type)?;
   write_str(writer, method)?;
   write_array_len(writer, args.len() as u32)?;
   for arg in args {
@@ -526,17 +534,18 @@ where
   Ok(())
 }
 
-/// Encode an `nvim_input` request using a buffer reused with the writer.
+/// Encode an `nvim_input` request or notification using a buffer reused with
+/// the writer.
 pub async fn encode_nvim_input_with_state<
   W: AsyncWrite + Send + Unpin + 'static,
 >(
   state: &Mutex<EncodeState<W>>,
-  msgid: u64,
+  message_type: MessageType,
   keys: &str,
 ) -> Result<(), Box<EncodeError>> {
   let mut state = state.lock().await;
   state.buffer.clear();
-  encode_nvim_input_sync(&mut state.buffer, msgid, keys)?;
+  encode_nvim_input_sync(&mut state.buffer, message_type, keys)?;
 
   let EncodeState { writer, buffer } = &mut *state;
   writer.write_all(buffer).await?;
@@ -726,16 +735,32 @@ mod decode_state_tests {
 
   #[test]
   fn encode_nvim_input_sync_matches_rpc_message_encoding() {
-    let mut direct = Vec::new();
-    encode_nvim_input_sync(&mut direct, 7, "<C-D>").unwrap();
+    let mut request = Vec::new();
+    encode_nvim_input_sync(&mut request, MessageType::Request(7), "<C-D>")
+      .unwrap();
 
-    let via_message = encoded(RpcMessage::RpcRequest {
+    let via_request = encoded(RpcMessage::RpcRequest {
       msgid: 7,
       method: "nvim_input".to_owned(),
       params: vec![Value::from("<C-D>")],
     });
 
-    assert_eq!(direct, via_message);
+    assert_eq!(request, via_request);
+
+    let mut notification = Vec::new();
+    encode_nvim_input_sync(
+      &mut notification,
+      MessageType::Notification,
+      "<C-D>",
+    )
+    .unwrap();
+
+    let via_notification = encoded(RpcMessage::RpcNotification {
+      method: "nvim_input".to_owned(),
+      params: vec![Value::from("<C-D>")],
+    });
+
+    assert_eq!(notification, via_notification);
   }
 
   #[test]
