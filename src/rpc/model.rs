@@ -3,7 +3,6 @@ use std::{
   self,
   convert::TryInto,
   io::{self, ErrorKind, Read, Write},
-  sync::Arc,
 };
 
 use bytes::{Bytes, BytesMut};
@@ -504,11 +503,11 @@ impl<W> EncodeState<W> {
 /// Encode the given message into the `BufWriter`. Flushes the writer when
 /// finished.
 pub async fn encode<W>(
-  writer: Arc<Mutex<W>>,
+  writer: &Mutex<W>,
   msg: RpcMessage,
 ) -> Result<(), Box<EncodeError>>
 where
-  W: AsyncWrite + Send + Unpin + 'static,
+  W: AsyncWrite + Send + Unpin,
 {
   let mut v: Vec<u8> = vec![];
   encode_sync(&mut v, msg)?;
