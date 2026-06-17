@@ -1,6 +1,6 @@
 [package]
 name = "navy-nvim-rs"
-version = "0.0.7"
+version = "0.0.8"
 license = "LGPL-3.0"
 authors = [
     "KillTheMule <KillTheMule@users.noreply.github.com>",
