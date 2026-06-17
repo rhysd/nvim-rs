@@ -11,7 +11,7 @@ use futures::{
 use navy_nvim_rs::rpc::{
   model::{
     DecodeState, EncodeState, MessageType, RpcMessage,
-    encode_nvim_input_with_state, encode_sync, encode_with_state,
+    encode_single_string_arg_msg_to_state, encode_sync, encode_to_state,
   },
   redraw::{
     RedrawDecodeError, RedrawDecodeResult, RedrawFrame, RedrawFrameInfo,
@@ -306,7 +306,7 @@ fn bench_encode(c: &mut Criterion) {
     let state = Mutex::new(EncodeState::new(sink()));
     b.iter_batched(
       || request_msg.clone(),
-      |msg| black_box(block_on(encode_with_state(&state, msg)).unwrap()),
+      |msg| black_box(block_on(encode_to_state(&state, msg)).unwrap()),
       BatchSize::SmallInput,
     );
   });
@@ -314,9 +314,10 @@ fn bench_encode(c: &mut Criterion) {
   group.bench_function("nvim_input_ctrl_d", |b| {
     let state = Mutex::new(EncodeState::new(sink()));
     b.iter(|| {
-      block_on(encode_nvim_input_with_state(
+      block_on(encode_single_string_arg_msg_to_state(
         &state,
         MessageType::Request(1),
+        "nvim_input",
         "<C-D>",
       ))
       .unwrap()
@@ -326,9 +327,10 @@ fn bench_encode(c: &mut Criterion) {
   group.bench_function("nvim_input_ctrl_d_notify", |b| {
     let state = Mutex::new(EncodeState::new(sink()));
     b.iter(|| {
-      block_on(encode_nvim_input_with_state(
+      block_on(encode_single_string_arg_msg_to_state(
         &state,
         MessageType::Notification,
+        "nvim_input",
         "<C-D>",
       ))
       .unwrap()

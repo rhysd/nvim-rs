@@ -415,18 +415,19 @@ pub fn encode_sync<W: Write>(
   Ok(())
 }
 
-/// Encode an `nvim_input` request or notification without building an owned
-/// [`RpcMessage`].
+/// Encode a request or notification with one string argument without building
+/// an owned [`RpcMessage`].
 #[inline]
-pub fn encode_nvim_input_sync<W: Write>(
+fn write_single_string_arg_msg<W: Write>(
   writer: &mut W,
   message_type: MessageType,
-  keys: &str,
+  method: &str,
+  arg: &str,
 ) -> Result<(), Box<EncodeError>> {
   write_message_header(writer, message_type)?;
-  write_str(writer, "nvim_input")?;
+  write_str(writer, method)?;
   write_array_len(writer, 1)?;
-  write_str(writer, keys)?;
+  write_str(writer, arg)?;
   Ok(())
 }
 
@@ -520,7 +521,7 @@ where
 }
 
 /// Encode the given message using a buffer reused with the writer.
-pub async fn encode_with_state<W>(
+pub async fn encode_to_state<W>(
   state: &Mutex<EncodeState<W>>,
   msg: RpcMessage,
 ) -> Result<(), Box<EncodeError>>
@@ -538,18 +539,19 @@ where
   Ok(())
 }
 
-/// Encode an `nvim_input` request or notification using a buffer reused with
-/// the writer.
-pub async fn encode_nvim_input_with_state<
+/// Encode a request or notification with one string argument using a buffer
+/// reused with the writer.
+pub async fn encode_single_string_arg_msg_to_state<
   W: AsyncWrite + Send + Unpin + 'static,
 >(
   state: &Mutex<EncodeState<W>>,
   message_type: MessageType,
-  keys: &str,
+  method: &str,
+  arg: &str,
 ) -> Result<(), Box<EncodeError>> {
   let mut state = state.lock().await;
   state.buffer.clear();
-  encode_nvim_input_sync(&mut state.buffer, message_type, keys)?;
+  write_single_string_arg_msg(&mut state.buffer, message_type, method, arg)?;
 
   let EncodeState { writer, buffer } = &mut *state;
   writer.write_all(buffer).await?;
@@ -559,7 +561,7 @@ pub async fn encode_nvim_input_with_state<
 }
 
 /// Encode a request or notification using borrowed argument values.
-pub async fn encode_value_ref_with_state<W>(
+pub async fn encode_value_ref_to_state<W>(
   state: &Mutex<EncodeState<W>>,
   message_type: MessageType,
   method: &str,
@@ -738,10 +740,15 @@ mod decode_state_tests {
   }
 
   #[test]
-  fn encode_nvim_input_sync_matches_rpc_message_encoding() {
+  fn encode_single_string_arg_sync_matches_rpc_message_encoding() {
     let mut request = Vec::new();
-    encode_nvim_input_sync(&mut request, MessageType::Request(7), "<C-D>")
-      .unwrap();
+    write_single_string_arg_msg(
+      &mut request,
+      MessageType::Request(7),
+      "nvim_input",
+      "<C-D>",
+    )
+    .unwrap();
 
     let via_request = encoded(RpcMessage::RpcRequest {
       msgid: 7,
@@ -752,9 +759,10 @@ mod decode_state_tests {
     assert_eq!(request, via_request);
 
     let mut notification = Vec::new();
-    encode_nvim_input_sync(
+    write_single_string_arg_msg(
       &mut notification,
       MessageType::Notification,
+      "nvim_input",
       "<C-D>",
     )
     .unwrap();
@@ -977,10 +985,9 @@ mod test {
 
     let buff: Vec<u8> = vec![];
     let tmp = Arc::new(Mutex::new(BufWriter::new(buff)));
-    let tmp2 = tmp.clone();
     let msg2 = msg.clone();
 
-    encode(tmp2, msg2).await.unwrap();
+    encode(&tmp, msg2).await.unwrap();
 
     let msg_dest = {
       let v = &mut *tmp.lock().await;
@@ -1010,10 +1017,8 @@ mod test {
     let msg_1_c = msg_1.clone();
     let msg_2_c = msg_2.clone();
 
-    let tmp_c = tmp.clone();
-    encode(tmp_c, msg_1_c).await.unwrap();
-    let tmp_c = tmp.clone();
-    encode(tmp_c, msg_2_c).await.unwrap();
+    encode(&tmp, msg_1_c).await.unwrap();
+    encode(&tmp, msg_2_c).await.unwrap();
     let len = (*tmp).lock().await.get_ref().len();
     assert_eq!(34, len); // Note: msg2 is 2 longer than msg
 
@@ -1046,11 +1051,11 @@ mod test {
     let buff: Vec<u8> = vec![];
     let state = Arc::new(Mutex::new(EncodeState::new(BufWriter::new(buff))));
 
-    encode_with_state(&state, msg_1.clone()).await.unwrap();
+    encode_to_state(&state, msg_1.clone()).await.unwrap();
     let first_capacity = state.lock().await.buffer.capacity();
     assert!(first_capacity > 0);
 
-    encode_with_state(&state, msg_2.clone()).await.unwrap();
+    encode_to_state(&state, msg_2.clone()).await.unwrap();
     let mut state = state.lock().await;
     assert_eq!(first_capacity, state.buffer.capacity());
 

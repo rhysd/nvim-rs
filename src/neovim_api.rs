@@ -1201,30 +1201,6 @@ where
       .map_err(|v| Box::new(CallError::WrongValueType(v)))
   }
 
-  pub async fn out_write(&self, str: &str) -> Result<(), Box<CallError>> {
-    self
-      .call("nvim_out_write", call_args![str])
-      .await??
-      .try_unpack()
-      .map_err(|v| Box::new(CallError::WrongValueType(v)))
-  }
-
-  pub async fn err_write(&self, str: &str) -> Result<(), Box<CallError>> {
-    self
-      .call("nvim_err_write", call_args![str])
-      .await??
-      .try_unpack()
-      .map_err(|v| Box::new(CallError::WrongValueType(v)))
-  }
-
-  pub async fn err_writeln(&self, str: &str) -> Result<(), Box<CallError>> {
-    self
-      .call("nvim_err_writeln", call_args![str])
-      .await??
-      .try_unpack()
-      .map_err(|v| Box::new(CallError::WrongValueType(v)))
-  }
-
   pub async fn notify(
     &self,
     msg: &str,

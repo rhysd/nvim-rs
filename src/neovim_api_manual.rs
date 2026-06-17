@@ -115,7 +115,22 @@ where
 
   #[inline]
   pub async fn notify_input(&self, keys: &str) -> Result<(), Box<CallError>> {
-    self.notify_nvim_input(keys).await
+    self.notify_string("nvim_input", keys).await
+  }
+
+  #[inline]
+  pub async fn out_write(&self, str: &str) -> Result<(), Box<CallError>> {
+    self.notify_string("nvim_out_write", str).await
+  }
+
+  #[inline]
+  pub async fn err_write(&self, str: &str) -> Result<(), Box<CallError>> {
+    self.notify_string("nvim_err_write", str).await
+  }
+
+  #[inline]
+  pub async fn err_writeln(&self, str: &str) -> Result<(), Box<CallError>> {
+    self.notify_string("nvim_err_writeln", str).await
   }
 
   #[inline]

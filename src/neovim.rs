@@ -190,7 +190,7 @@ where
       method: "nvim_exec_lua".to_owned(),
       params: call_args![format!("return '{message}'"), Vec::<Value>::new()],
     };
-    model::encode_with_state(&instance.inner.writer, req).await?;
+    model::encode_to_state(&instance.inner.writer, req).await?;
 
     let expected_resp = RpcMessage::RpcResponse {
       msgid,
@@ -259,24 +259,26 @@ where
 
     self.inner.queue.lock().await.push((msgid, sender));
 
-    model::encode_with_state(&self.inner.writer, req).await?;
+    model::encode_to_state(&self.inner.writer, req).await?;
 
     Ok(receiver)
   }
 
-  async fn send_nvim_input(
+  async fn send_string(
     &self,
-    keys: &str,
+    method: &str,
+    arg: &str,
   ) -> Result<oneshot::Receiver<ResponseResult>, Box<EncodeError>> {
     let msgid = self.inner.msgid_counter.fetch_add(1, Ordering::Relaxed);
     let (sender, receiver) = oneshot::channel();
 
     self.inner.queue.lock().await.push((msgid, sender));
 
-    model::encode_nvim_input_with_state(
+    model::encode_single_string_arg_msg_to_state(
       &self.inner.writer,
       MessageType::Request(msgid),
-      keys,
+      method,
+      arg,
     )
     .await?;
 
@@ -293,7 +295,7 @@ where
 
     self.inner.queue.lock().await.push((msgid, sender));
 
-    model::encode_value_ref_with_state(
+    model::encode_value_ref_to_state(
       &self.inner.writer,
       MessageType::Request(msgid),
       method,
@@ -324,26 +326,26 @@ where
     const METHOD: &str = "nvim_input";
 
     let receiver = self
-      .send_nvim_input(keys)
+      .send_string(METHOD, keys)
       .await
       .map_err(|e| CallError::SendError(*e, METHOD.to_owned()))?;
 
     receive_response(receiver, METHOD).await
   }
 
-  pub(crate) async fn notify_nvim_input(
+  pub(crate) async fn notify_string(
     &self,
-    keys: &str,
+    method: &str,
+    arg: &str,
   ) -> Result<(), Box<CallError>> {
-    const METHOD: &str = "nvim_input";
-
-    model::encode_nvim_input_with_state(
+    model::encode_single_string_arg_msg_to_state(
       &self.inner.writer,
       MessageType::Notification,
-      keys,
+      method,
+      arg,
     )
     .await
-    .map_err(|e| Box::new(CallError::SendError(*e, METHOD.to_owned())))
+    .map_err(|e| Box::new(CallError::SendError(*e, method.to_owned())))
   }
 
   pub async fn call_value_ref(
@@ -364,7 +366,7 @@ where
     method: &str,
     args: &[ValueRef<'_>],
   ) -> Result<(), Box<CallError>> {
-    model::encode_value_ref_with_state(
+    model::encode_value_ref_to_state(
       &self.inner.writer,
       MessageType::Notification,
       method,
@@ -446,7 +448,7 @@ where
                   },
                 };
 
-              model::encode_with_state(&inner.writer, response)
+              model::encode_to_state(&inner.writer, response)
                 .await
                 .unwrap_or_else(|e| {
                   error!(
