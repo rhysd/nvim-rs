@@ -448,14 +448,7 @@ where
                   },
                 };
 
-              model::encode_to_state(&inner.writer, response)
-                .await
-                .unwrap_or_else(|e| {
-                  error!(
-                    "Error sending response to request {}: '{}'",
-                    msgid, e
-                  );
-                });
+              let _ = model::encode_to_state(&inner.writer, response).await;
             });
           }
           RpcMessage::RpcNotification { method, params } => {
@@ -487,7 +480,6 @@ where
         }
       };
 
-      debug!("Get message {:?}", msg);
       match msg {
         HandlerMessage::RpcMessage(RpcMessage::RpcResponse {
           msgid,

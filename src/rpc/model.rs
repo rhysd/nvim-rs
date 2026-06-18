@@ -129,7 +129,6 @@ impl DecodeState {
   where
     R: AsyncRead + Send + Unpin + 'static,
   {
-    debug!("Not enough data, reading more!");
     self.compact_rest();
 
     let read_buf = self

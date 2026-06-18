@@ -25,8 +25,6 @@
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 extern crate rmp;
 extern crate rmpv;
-#[macro_use]
-extern crate log;
 
 pub mod rpc;
 #[macro_use]
