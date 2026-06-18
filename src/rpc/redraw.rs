@@ -390,6 +390,14 @@ impl<'de> ArrayReader<'de> {
   }
 
   #[inline]
+  pub fn read_u64_or_nil(&mut self) -> RedrawDecodeResult<Option<u64>> {
+    self.ensure_remaining()?;
+    let value = self.reader.read_u64_or_nil()?;
+    self.remaining -= 1;
+    Ok(value)
+  }
+
+  #[inline]
   pub fn read_i64(&mut self) -> RedrawDecodeResult<i64> {
     self.ensure_remaining()?;
     let value = self.reader.read_i64()?;
@@ -616,6 +624,17 @@ impl<'de> MsgpackReader<'de> {
   #[inline]
   fn read_u64(&mut self) -> RedrawDecodeResult<u64> {
     Ok(self.read_rmp(decode::read_int::<u64, _>)?)
+  }
+
+  #[inline]
+  fn read_u64_or_nil(&mut self) -> RedrawDecodeResult<Option<u64>> {
+    let mut bytes = Bytes::new(self.remaining_slice());
+    if decode::read_marker(&mut bytes)? == Marker::Null {
+      self.skip_bytes(1)?;
+      Ok(None)
+    } else {
+      self.read_u64().map(Some)
+    }
   }
 
   #[inline]
@@ -1372,6 +1391,45 @@ mod tests {
     assert_eq!(array.read_u64().unwrap(), 24);
     assert_eq!(array.read_str().unwrap(), "text");
     assert!(array.is_empty());
+  }
+
+  #[test]
+  fn array_reader_reads_u64_or_nil_values() {
+    let mut bytes = vec![Marker::FixArray(5).to_u8()];
+    bytes.push(Marker::FixPos(24).to_u8());
+    bytes.push(Marker::Null.to_u8());
+    bytes.push(Marker::U16.to_u8());
+    push_u16(&mut bytes, 256);
+    bytes.push(Marker::U64.to_u8());
+    push_u64(&mut bytes, 9_007_199_254_740_991);
+    bytes.push(Marker::I8.to_u8());
+    bytes.extend_from_slice(&2_i8.to_be_bytes());
+
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_eq!(array.read_u64_or_nil().unwrap(), Some(24));
+    assert_eq!(array.read_u64_or_nil().unwrap(), None);
+    assert_eq!(array.read_u64_or_nil().unwrap(), Some(256));
+    assert_eq!(
+      array.read_u64_or_nil().unwrap(),
+      Some(9_007_199_254_740_991)
+    );
+    assert_eq!(array.read_u64_or_nil().unwrap(), Some(2));
+    assert!(array.is_empty());
+    assert_incomplete(array.read_u64_or_nil());
+  }
+
+  #[test]
+  fn array_reader_reports_u64_or_nil_errors() {
+    let bytes = encode_value(Value::from(vec![Value::from("not-u64")]));
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_reader_error_kind(array.read_u64_or_nil(), ErrorKind::InvalidData);
+
+    let bytes = encode_value(Value::from(vec![Value::from(-1)]));
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_reader_error_kind(array.read_u64_or_nil(), ErrorKind::InvalidData);
   }
 
   #[test]
