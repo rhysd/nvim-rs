@@ -8,4 +8,4 @@ pub mod redraw;
 pub mod unpack;
 
 pub use self::model::{IntoVal, RpcMessage};
-pub use rmpv::Value;
+pub use rmpv::{Value, ValueRef};

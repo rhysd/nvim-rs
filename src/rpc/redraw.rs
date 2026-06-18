@@ -13,6 +13,7 @@ use rmp::{
     bytes::BytesReadError,
   },
 };
+use rmpv::{ValueRef, decode::read_value_ref};
 
 use crate::error::{DecodeError, LoopError};
 
@@ -120,8 +121,13 @@ impl From<DecodeStringError<'_, BytesReadError>> for RedrawDecodeError {
 }
 
 impl From<rmpv::decode::Error> for RedrawDecodeError {
+  #[inline]
   fn from(err: rmpv::decode::Error) -> Self {
-    Self::new(err)
+    match err {
+      rmpv::decode::Error::InvalidMarkerRead(err)
+      | rmpv::decode::Error::InvalidDataRead(err) => err.into(),
+      err => Self::new(err),
+    }
   }
 }
 
@@ -546,6 +552,15 @@ impl<'de> MapReader<'de> {
   }
 
   #[inline]
+  pub fn read_pair(&mut self) -> RedrawDecodeResult<(&'de str, ValueRef<'de>)> {
+    self.ensure_remaining()?;
+    let key = self.reader.read_str()?;
+    let value = self.reader.read_value_ref()?;
+    self.remaining -= 1;
+    Ok((key, value))
+  }
+
+  #[inline]
   pub fn skip_next(&mut self) -> RedrawDecodeResult<()> {
     self.ensure_remaining()?;
     self.reader.skip_value()?;
@@ -685,6 +700,15 @@ impl<'de> MsgpackReader<'de> {
     self.skip_value()?;
     let bytes = &self.input[start..self.position];
     Ok(RawMsgpack { bytes })
+  }
+
+  #[inline]
+  fn read_value_ref(&mut self) -> RedrawDecodeResult<ValueRef<'de>> {
+    let mut bytes = self.remaining_slice();
+    let before = bytes.len();
+    let value = read_value_ref(&mut bytes)?;
+    self.position += before - bytes.len();
+    Ok(value)
   }
 
   fn read_as_string(&mut self) -> RedrawDecodeResult<Option<String>> {
@@ -1522,6 +1546,44 @@ mod tests {
         Ok(true)
       })
       .unwrap();
+  }
+
+  #[test]
+  fn map_reader_reads_string_key_value_ref_pairs() {
+    let bytes = encode_value(Value::from(vec![
+      (Value::from("k1"), Value::from(1)),
+      (Value::from("k2"), Value::from(true)),
+      (Value::from("k3"), Value::from("v")),
+    ]));
+    let mut reader = MsgpackReader::new(&bytes);
+    let mut map = reader.read_map_reader().unwrap();
+
+    let (key, value) = map.read_pair().unwrap();
+    assert_eq!(key, "k1");
+    assert_eq!(value.as_u64(), Some(1));
+
+    let (key, value) = map.read_pair().unwrap();
+    assert_eq!(key, "k2");
+    assert!(matches!(value, ValueRef::Boolean(true)));
+
+    let (key, value) = map.read_pair().unwrap();
+    assert_eq!(key, "k3");
+    assert!(
+      matches!(value, ValueRef::String(value) if value.as_str() == Some("v"))
+    );
+
+    assert!(map.is_empty());
+    assert_reader_error_kind(map.read_pair(), ErrorKind::UnexpectedEof);
+  }
+
+  #[test]
+  fn map_reader_read_pair_reports_non_string_key() {
+    let bytes =
+      encode_value(Value::from(vec![(Value::from(1), Value::from(true))]));
+    let mut reader = MsgpackReader::new(&bytes);
+    let mut map = reader.read_map_reader().unwrap();
+
+    assert_reader_error_kind(map.read_pair(), ErrorKind::InvalidData);
   }
 
   #[test]
