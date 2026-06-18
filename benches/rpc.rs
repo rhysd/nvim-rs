@@ -97,9 +97,9 @@ fn consume_redraw_arrays_for_bench(
     while !batch.args.is_empty() {
       batch.args.read_array(|args| {
         while !args.is_empty() {
-          let value = args.read_raw_value()?;
+          args.skip_next()?;
           value_count += 1;
-          black_box(value.as_bytes());
+          black_box(value_count);
         }
 
         Ok(())

@@ -261,48 +261,6 @@ impl RedrawFrame {
   }
 }
 
-/// A single msgpack value borrowed from the input buffer.
-pub struct RawMsgpack<'de> {
-  bytes: &'de [u8],
-}
-
-impl<'de> RawMsgpack<'de> {
-  #[inline]
-  pub fn as_bytes(&self) -> &'de [u8] {
-    self.bytes
-  }
-
-  #[inline]
-  pub fn as_str(&self) -> RedrawDecodeResult<&'de str> {
-    Ok(decode::read_str_from_slice(self.bytes)?.0)
-  }
-
-  #[inline]
-  pub fn as_i64(&self) -> RedrawDecodeResult<i64> {
-    Ok(decode::read_int::<i64, _>(&mut Bytes::new(self.bytes))?)
-  }
-
-  #[inline]
-  pub fn as_u64(&self) -> RedrawDecodeResult<u64> {
-    Ok(decode::read_int::<u64, _>(&mut Bytes::new(self.bytes))?)
-  }
-
-  #[inline]
-  pub fn as_bool(&self) -> RedrawDecodeResult<bool> {
-    Ok(decode::read_bool(&mut Bytes::new(self.bytes))?)
-  }
-
-  #[inline]
-  pub fn as_f32(&self) -> RedrawDecodeResult<f32> {
-    Ok(decode::read_f32(&mut Bytes::new(self.bytes))?)
-  }
-
-  #[inline]
-  pub fn as_f64(&self) -> RedrawDecodeResult<f64> {
-    Ok(decode::read_f64(&mut Bytes::new(self.bytes))?)
-  }
-}
-
 /// The params of a `redraw` notification.
 pub struct RedrawNotification<'de> {
   params: ArrayReader<'de>,
@@ -477,14 +435,6 @@ impl<'de> ArrayReader<'de> {
   }
 
   #[inline]
-  pub fn read_raw_value(&mut self) -> RedrawDecodeResult<RawMsgpack<'de>> {
-    self.ensure_remaining()?;
-    let value = self.reader.read_raw_value()?;
-    self.remaining -= 1;
-    Ok(value)
-  }
-
-  #[inline]
   pub fn skip_next(&mut self) -> RedrawDecodeResult<()> {
     self.ensure_remaining()?;
     self.reader.skip_value()?;
@@ -538,17 +488,6 @@ impl<'de> MapReader<'de> {
   #[must_use]
   pub fn is_empty(&self) -> bool {
     self.remaining == 0
-  }
-
-  #[inline]
-  pub fn read_raw_pair(
-    &mut self,
-  ) -> RedrawDecodeResult<(RawMsgpack<'de>, RawMsgpack<'de>)> {
-    self.ensure_remaining()?;
-    let key = self.reader.read_raw_value()?;
-    let value = self.reader.read_raw_value()?;
-    self.remaining -= 1;
-    Ok((key, value))
   }
 
   #[inline]
@@ -692,14 +631,6 @@ impl<'de> MsgpackReader<'de> {
       reader: self.clone(),
       remaining,
     })
-  }
-
-  #[inline]
-  fn read_raw_value(&mut self) -> RedrawDecodeResult<RawMsgpack<'de>> {
-    let start = self.position;
-    self.skip_value()?;
-    let bytes = &self.input[start..self.position];
-    Ok(RawMsgpack { bytes })
   }
 
   #[inline]
@@ -910,20 +841,12 @@ impl<'de> MsgpackReader<'de> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use rmpv::{Value, decode::read_value, encode::write_value};
+  use rmpv::{Value, encode::write_value};
 
   fn encode_value(value: Value) -> Vec<u8> {
     let mut bytes = Vec::new();
     write_value(&mut bytes, &value).unwrap();
     bytes
-  }
-
-  #[track_caller]
-  fn decode_raw_value(raw: RawMsgpack<'_>) -> Value {
-    let mut input = raw.as_bytes();
-    let value = read_value(&mut input).unwrap();
-    assert!(input.is_empty());
-    value
   }
 
   fn redraw_notification(params: Vec<Value>) -> Vec<u8> {
@@ -1336,55 +1259,7 @@ mod tests {
   }
 
   #[test]
-  fn redraw_batch_exposes_raw_payloads() {
-    let bytes = redraw_notification(vec![Value::from(vec![
-      Value::from("grid_line"),
-      Value::from(vec![Value::from(1), Value::from("cell")]),
-    ])]);
-    let mut redraw = read_redraw_notification(&bytes);
-    let mut payloads = Vec::new();
-
-    redraw
-      .for_each_batch(|batch| {
-        while !batch.args.is_empty() {
-          let payload = batch.args.read_raw_value()?;
-          payloads.push(decode_raw_value(payload));
-        }
-        Ok(true)
-      })
-      .unwrap();
-
-    assert_eq!(
-      payloads,
-      vec![Value::from(vec![Value::from(1), Value::from("cell")])]
-    );
-  }
-
-  #[test]
-  fn raw_msgpack_reads_scalar_values() {
-    let bytes = redraw_notification(vec![Value::from(vec![
-      Value::from("values"),
-      Value::from("text"),
-      Value::from(-1),
-      Value::from(2),
-      Value::from(true),
-    ])]);
-    let mut redraw = read_redraw_notification(&bytes);
-
-    redraw
-      .for_each_batch(|batch| {
-        assert_eq!(batch.name, "values");
-        assert_eq!(batch.args.read_raw_value()?.as_str()?, "text");
-        assert_eq!(batch.args.read_raw_value()?.as_i64()?, -1);
-        assert_eq!(batch.args.read_raw_value()?.as_u64()?, 2);
-        assert!(batch.args.read_raw_value()?.as_bool()?);
-        Ok(true)
-      })
-      .unwrap();
-  }
-
-  #[test]
-  fn readers_read_float_values() {
+  fn array_reader_reads_float_values() {
     let f32_value = 1.25_f32;
     let f64_value = -2.5_f64;
     let mut bytes = vec![Marker::FixArray(2).to_u8()];
@@ -1393,16 +1268,9 @@ mod tests {
 
     let mut reader = MsgpackReader::new(&bytes);
     let mut array = reader.read_array_reader().unwrap();
-
-    let raw_f32 = array.read_raw_value().unwrap();
-    let raw_f64 = array.read_raw_value().unwrap();
-    assert_eq!(raw_f32.as_f32().unwrap(), f32_value);
-    assert_eq!(raw_f64.as_f64().unwrap(), f64_value);
-
-    let mut reader = MsgpackReader::new(&bytes);
-    let mut array = reader.read_array_reader().unwrap();
     assert_eq!(array.read_f32().unwrap(), f32_value);
     assert_eq!(array.read_f64().unwrap(), f64_value);
+    assert!(array.is_empty());
   }
 
   #[test]
@@ -1524,28 +1392,15 @@ mod tests {
   }
 
   #[test]
-  fn array_reader_reads_maps_as_raw_pairs() {
-    let bytes = redraw_notification(vec![Value::from(vec![
-      Value::from("option_set"),
-      Value::from(vec![Value::from(vec![(Value::from("k"), Value::from(1))])]),
-    ])]);
-    let mut redraw = read_redraw_notification(&bytes);
+  fn array_reader_reads_map_values() {
+    let bytes = encode_value(Value::from(vec![Value::from(vec![(
+      Value::from("k"),
+      Value::from(1),
+    )])]));
+    let mut array = ArrayReader::new(&bytes).unwrap();
 
-    redraw
-      .for_each_batch(|batch| {
-        while !batch.args.is_empty() {
-          batch.args.read_array(|args| {
-            args.read_map(|map| {
-              let (key, value) = map.read_raw_pair()?;
-              assert_eq!(decode_raw_value(key), Value::from("k"));
-              assert_eq!(decode_raw_value(value), Value::from(1));
-              Ok(())
-            })
-          })?;
-        }
-        Ok(true)
-      })
-      .unwrap();
+    assert_eq!(array.read_map(|map| Ok(map.remaining())).unwrap(), 1);
+    assert!(array.is_empty());
   }
 
   #[test]
@@ -1592,8 +1447,8 @@ mod tests {
     let mut reader = MsgpackReader::new(&bytes);
     let mut array = reader.read_array_reader().unwrap();
 
-    assert_eq!(array.read_raw_value().unwrap().as_str().unwrap(), "value");
-    assert_reader_error_kind(array.read_raw_value(), ErrorKind::UnexpectedEof);
+    assert_eq!(array.read_str().unwrap(), "value");
+    assert_reader_error_kind(array.read_str(), ErrorKind::UnexpectedEof);
   }
 
   #[test]
@@ -1622,7 +1477,7 @@ mod tests {
   }
 
   #[test]
-  fn map_reader_reads_raw_pairs_and_skips_entries() {
+  fn map_reader_skips_entries() {
     let bytes = encode_value(Value::from(vec![
       (Value::from("k1"), Value::from(1)),
       (Value::from("k2"), Value::from(2)),
@@ -1633,11 +1488,13 @@ mod tests {
     assert_eq!(map.remaining(), 2);
     assert!(!map.is_empty());
 
-    let (key, value) = map.read_raw_pair().unwrap();
-    assert_eq!(decode_raw_value(key), Value::from("k1"));
-    assert_eq!(decode_raw_value(value), Value::from(1));
-
     map.skip_next().unwrap();
+    assert_eq!(map.remaining(), 1);
+
+    let (key, value) = map.read_pair().unwrap();
+    assert_eq!(key, "k2");
+    assert_eq!(value.as_u64(), Some(2));
+
     assert!(map.is_empty());
     assert_reader_error_kind(map.skip_next(), ErrorKind::UnexpectedEof);
   }
@@ -1785,7 +1642,7 @@ mod tests {
 
     let truncated_value = [Marker::Str8.to_u8(), 2, b'a'];
     let mut reader = MsgpackReader::new(&truncated_value);
-    assert!(reader.read_raw_value().is_err());
+    assert_reader_error_kind(reader.read_value_ref(), ErrorKind::UnexpectedEof);
 
     let mut reader = MsgpackReader::new(&[]);
     assert_reader_error_kind(
