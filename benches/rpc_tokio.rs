@@ -17,12 +17,10 @@ fn simple_requests(c: &mut Criterion) {
 
   let rt = Builder::new_current_thread().enable_io().build().unwrap();
 
-  let (nvim, _io_handler, _child) = rt
-    .block_on(create::new_child_cmd(
-      Command::new(nvim_path()).args(&["-u", "NONE", "--embed", "--headless"]),
-      handler,
-    ))
-    .unwrap();
+  let mut cmd = Command::new(nvim_path());
+  cmd.args(["-u", "NONE", "--embed", "--headless"]);
+  let (nvim, _io_handler, _child) =
+    create::new_child_cmd(cmd, handler).unwrap();
 
   let nvim1 = nvim.clone();
   rt.block_on(async move { nvim1.command("set noswapfile").await })
@@ -43,18 +41,10 @@ fn request_file(c: &mut Criterion) {
 
   let rt = Builder::new_current_thread().enable_io().build().unwrap();
 
-  let (nvim, _io_handler, _child) = rt
-    .block_on(create::new_child_cmd(
-      Command::new(nvim_path()).args(&[
-        "-u",
-        "NONE",
-        "--embed",
-        "--headless",
-        "Cargo.lock",
-      ]),
-      handler,
-    ))
-    .unwrap();
+  let mut cmd = Command::new(nvim_path());
+  cmd.args(["-u", "NONE", "--embed", "--headless", "Cargo.lock"]);
+  let (nvim, _io_handler, _child) =
+    create::new_child_cmd(cmd, handler).unwrap();
 
   let nvim1 = nvim.clone();
   rt.block_on(async move { nvim1.command("set noswapfile").await })

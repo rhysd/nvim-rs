@@ -13,14 +13,11 @@ const NVIMPATH: &str = "neovim/build/bin/nvim";
 async fn main() {
   let handler = DummyHandler::new();
 
-  let (nvim, _io_handle, _child) = create::new_child_cmd(
-    Command::new(NVIMPATH)
-      .args(&["-u", "NONE", "--embed", "--headless"])
-      .env("NVIM_LOG_FILE", "nvimlog"),
-    handler,
-  )
-  .await
-  .unwrap();
+  let mut cmd = Command::new(NVIMPATH);
+  cmd
+    .args(["-u", "NONE", "--embed", "--headless"])
+    .env("NVIM_LOG_FILE", "nvimlog");
+  let (nvim, _io_handle, _child) = create::new_child_cmd(cmd, handler).unwrap();
 
   let chan = nvim.get_api_info().await.unwrap()[0].as_i64().unwrap();
   let close = format!("call chanclose({})", chan);

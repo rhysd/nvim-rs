@@ -152,14 +152,16 @@ pub async fn new_child_path<H, S: AsRef<Path>>(
 where
   H: Handler<Writer = Compat<ChildStdin>> + Send + 'static,
 {
-  new_child_cmd(Command::new(program.as_ref()).arg("--embed"), handler).await
+  let mut cmd = Command::new(program.as_ref());
+  cmd.arg("--embed");
+  new_child_cmd(cmd, handler)
 }
 
 /// Connect to a neovim instance by spawning a new one
 ///
 /// stdin/stdout will be rewritten to `Stdio::piped()`
-pub async fn new_child_cmd<H>(
-  cmd: &mut Command,
+pub fn new_child_cmd<H>(
+  mut cmd: Command,
   handler: H,
 ) -> io::Result<(
   Neovim<Compat<ChildStdin>>,

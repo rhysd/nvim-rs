@@ -69,14 +69,11 @@ async fn main() {
     buf: Arc::new(Mutex::new(vec![])),
   };
 
-  let (nvim, io_handle, _child) = create::new_child_cmd(
-    Command::new(NVIMPATH)
-      .args(&["-u", "NONE", "--embed", "--headless"])
-      .env("NVIM_LOG_FILE", "nvimlog"),
-    handler,
-  )
-  .await
-  .unwrap();
+  let mut cmd = Command::new(NVIMPATH);
+  cmd
+    .args(["-u", "NONE", "--embed", "--headless"])
+    .env("NVIM_LOG_FILE", "nvimlog");
+  let (nvim, io_handle, _child) = create::new_child_cmd(cmd, handler).unwrap();
 
   let curbuf = nvim.get_current_buf().await.unwrap();
   if !curbuf.attach(false, vec![]).await.unwrap() {

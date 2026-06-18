@@ -124,25 +124,22 @@ async fn main() {
   } else {
     NVIM_BIN
   };
-  let (nvim, io, _child) = create::new_child_cmd(
-    Command::new(path).args(&[
-      "-u",
-      "NONE",
-      "--embed",
-      "--headless",
-      "-c",
-      rs,
-      "-c",
-      ":let timer = timer_start(500, 'M')",
-      "-c",
-      rs2,
-      "-c",
-      ":let timer = timer_start(1500, 'N')",
-    ]),
-    handler,
-  )
-  .await
-  .unwrap();
+  let mut cmd = Command::new(path);
+  cmd.args([
+    "-u",
+    "NONE",
+    "--embed",
+    "--headless",
+    "-c",
+    rs,
+    "-c",
+    ":let timer = timer_start(500, 'M')",
+    "-c",
+    rs2,
+    "-c",
+    ":let timer = timer_start(1500, 'N')",
+  ]);
+  let (nvim, io, _child) = create::new_child_cmd(cmd, handler).unwrap();
 
   let nv = nvim.clone();
   spawn(async move { nv.set_var("oogle", Value::from("doodle")).await });

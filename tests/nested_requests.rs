@@ -116,25 +116,22 @@ async fn nested_requests() {
     froodle: froodle.clone(),
   };
 
-  let (nvim, io_handler, _child) = create::new_child_cmd(
-    Command::new(nvim_path()).args(&[
-      "-u",
-      "NONE",
-      "--embed",
-      "--headless",
-      "-c",
-      rs,
-      "-c",
-      ":let timer = timer_start(500, 'M')",
-      "-c",
-      rs2,
-      "-c",
-      ":let timer = timer_start(1500, 'N')",
-    ]),
-    handler,
-  )
-  .await
-  .unwrap();
+  let mut cmd = Command::new(nvim_path());
+  cmd.args([
+    "-u",
+    "NONE",
+    "--embed",
+    "--headless",
+    "-c",
+    rs,
+    "-c",
+    ":let timer = timer_start(500, 'M')",
+    "-c",
+    rs2,
+    "-c",
+    ":let timer = timer_start(1500, 'N')",
+  ]);
+  let (nvim, io_handler, _child) = create::new_child_cmd(cmd, handler).unwrap();
 
   let nv = nvim.clone();
   spawn(async move { nv.set_var("oogle", Value::from("doodle")).await });

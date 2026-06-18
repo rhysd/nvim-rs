@@ -74,12 +74,10 @@ async fn sequential_notifications() {
   };
 
   // Startup nvim
-  let (nvim, _io_handler, _child) = create::new_child_cmd(
-    Command::new(nvim_path()).args(&["-u", "NONE", "--embed", "--headless"]),
-    handler,
-  )
-  .await
-  .unwrap();
+  let mut cmd = Command::new(nvim_path());
+  cmd.args(["-u", "NONE", "--embed", "--headless"]);
+  let (nvim, _io_handler, _child) =
+    create::new_child_cmd(cmd, handler).unwrap();
 
   // Generate the commands to send the notifications
   let mut nvim_cmds = Vec::<String>::with_capacity(ITERS);
