@@ -23,7 +23,7 @@ use rmpv::{
 
 use crate::error::{DecodeError, EncodeError, InvalidMessage};
 
-const DECODE_READ_BUFFER_SIZE: usize = 80 * 1024;
+const DECODE_READ_BUFFER_SIZE: usize = 64 * 1024;
 const MSG_TYPE_REQUEST: u64 = 0;
 const MSG_TYPE_NOTIFICATION: u64 = 2;
 
