@@ -24,7 +24,6 @@ use rmpv::{
 use crate::error::{DecodeError, EncodeError, InvalidMessage};
 
 const DECODE_READ_BUFFER_SIZE: usize = 64 * 1024;
-const DECODE_READ_BUFFER_MIN_REMAINING: usize = 4 * 1024;
 const MSG_TYPE_REQUEST: u64 = 0;
 const MSG_TYPE_NOTIFICATION: u64 = 2;
 
@@ -57,7 +56,8 @@ pub enum RpcMessage {
 pub struct DecodeState {
   rest: BytesMut,
   start: usize,
-  end: usize,
+  // OnceCell is not available because `get_mut_or_init` is not stabilized yet
+  read_buf: Option<Box<[u8; DECODE_READ_BUFFER_SIZE]>>,
 }
 
 impl Default for DecodeState {
@@ -72,34 +72,33 @@ impl DecodeState {
     Self {
       rest: BytesMut::new(),
       start: 0,
-      end: 0,
+      read_buf: None,
     }
   }
 
   #[must_use]
   pub fn with_rest(rest: Vec<u8>) -> Self {
-    let end = rest.len();
     Self {
       rest: BytesMut::from(&rest[..]),
       start: 0,
-      end,
+      read_buf: None,
     }
   }
 
   #[inline]
   pub fn has_rest(&self) -> bool {
-    self.start < self.end
+    self.start < self.rest.len()
   }
 
   #[inline]
   pub fn rest(&self) -> &[u8] {
-    &self.rest[self.start..self.end]
+    &self.rest[self.start..]
   }
 
   pub fn try_decode_message(
     &mut self,
   ) -> Result<Option<RpcMessage>, Box<DecodeError>> {
-    match try_decode_slice(&self.rest[self.start..self.end])? {
+    match try_decode_slice(&self.rest[self.start..])? {
       Some((msg, consumed)) => {
         self.consume(consumed);
         Ok(Some(msg))
@@ -110,17 +109,16 @@ impl DecodeState {
 
   pub fn consume(&mut self, consumed: usize) {
     self.start += consumed;
-    debug_assert!(self.start <= self.end);
-    if self.start == self.end {
+    debug_assert!(self.start <= self.rest.len());
+    if self.start == self.rest.len() {
+      self.rest.clear();
       self.start = 0;
-      self.end = 0;
     }
   }
 
   #[inline]
   pub fn take_rest(&mut self, consumed: usize) -> Bytes {
     self.compact_rest();
-    self.end -= consumed;
     self.rest.split_to(consumed).freeze()
   }
 
@@ -132,15 +130,16 @@ impl DecodeState {
     R: AsyncRead + Send + Unpin + 'static,
   {
     self.compact_rest();
-    self.reserve_read_space();
 
-    let start = self.end;
-    let read_len = (self.rest.len() - start).min(DECODE_READ_BUFFER_SIZE);
+    let read_buf = self
+      .read_buf
+      .get_or_insert_with(|| Box::new([0; DECODE_READ_BUFFER_SIZE]))
+      .as_mut();
 
-    match reader.read(&mut self.rest[start..start + read_len]).await {
+    match reader.read(read_buf).await {
       Ok(0) => Err(io::Error::new(ErrorKind::UnexpectedEof, "EOF").into()),
       Ok(n) => {
-        self.end += n;
+        self.rest.extend_from_slice(&read_buf[..n]);
         Ok(())
       }
       Err(err) => Err(err.into()),
@@ -152,31 +151,8 @@ impl DecodeState {
     if self.start == 0 {
       return;
     }
-    if self.start == self.end {
-      self.start = 0;
-      self.end = 0;
-      return;
-    }
-
-    let start = self.start;
     let _ = self.rest.split_to(self.start);
-    self.end -= start;
     self.start = 0;
-  }
-
-  #[inline]
-  fn reserve_read_space(&mut self) {
-    let remaining = self.rest.len() - self.end;
-    if remaining < DECODE_READ_BUFFER_MIN_REMAINING {
-      let required_len = self.end + DECODE_READ_BUFFER_SIZE;
-      self.rest.reserve(required_len - self.rest.len());
-      // SAFETY: `rest()` and decode paths only expose `start..end`. The newly
-      // added tail is used as the destination for the next read, and `end` is
-      // advanced only by the number of initialized bytes reported by read.
-      unsafe {
-        self.rest.set_len(required_len);
-      }
-    }
   }
 }
 
@@ -936,21 +912,6 @@ mod decode_state_tests {
 
     assert_eq!(decode_next_from_state(&mut decoder, &mut reader), msg_1);
     assert_eq!(decode_next_from_state(&mut decoder, &mut reader), msg_2);
-  }
-
-  #[test]
-  fn decode_state_ignores_unread_tail_space() {
-    let msg = request(1, "test_method");
-    let bytes = encoded(msg.clone());
-    let mut reader = Cursor::new(bytes.clone());
-    let mut decoder = DecodeState::new();
-
-    block_on(decoder.read_next_chunk(&mut reader)).unwrap();
-
-    assert_eq!(decoder.rest(), bytes.as_slice());
-    assert_eq!(decoder.try_decode_message().unwrap(), Some(msg));
-    assert!(!decoder.has_rest());
-    assert!(decoder.rest().is_empty());
   }
 
   #[test]

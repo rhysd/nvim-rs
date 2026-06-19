@@ -462,7 +462,7 @@ fn bench_redraw_array_reader(c: &mut Criterion) {
     group.bench_with_input(
       BenchmarkId::new("single_nvim_ui_init", &input.name),
       &input.bytes,
-      |b, bytes| b.iter(|| black_box(parse_redraw_arrays(bytes))),
+      |b, bytes| b.iter(|| assert!(parse_redraw_arrays(bytes) > 0)),
     );
   }
 
@@ -473,7 +473,9 @@ fn bench_redraw_array_reader(c: &mut Criterion) {
     .collect::<Bytes>();
   group.throughput(Throughput::Bytes(ui_batch.len() as u64));
   group.bench_function("batch_nvim_ui_init", |b| {
-    b.iter(|| black_box(parse_redraw_arrays_batch(&ui_batch, ui_batch_count)));
+    b.iter(|| {
+      assert!(parse_redraw_arrays_batch(&ui_batch, ui_batch_count) > 0)
+    });
   });
 
   let scroll_ui_batch_count = captured_scroll_ui.len();
@@ -484,10 +486,9 @@ fn bench_redraw_array_reader(c: &mut Criterion) {
   group.throughput(Throughput::Bytes(scroll_ui_batch.len() as u64));
   group.bench_function("batch_nvim_ui_scroll", |b| {
     b.iter(|| {
-      black_box(parse_redraw_arrays_batch(
-        &scroll_ui_batch,
-        scroll_ui_batch_count,
-      ))
+      assert!(
+        parse_redraw_arrays_batch(&scroll_ui_batch, scroll_ui_batch_count,) > 0
+      )
     });
   });
 
