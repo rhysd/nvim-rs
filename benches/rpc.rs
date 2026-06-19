@@ -25,6 +25,8 @@ const NVIM_UI_FIXTURE: &[u8] =
   include_bytes!("fixtures/nvim_ui_notifications.bin");
 const NVIM_UI_SCROLL_FIXTURE: &[u8] =
   include_bytes!("fixtures/nvim_ui_scroll_notifications.bin");
+const NVIM_UI_400X100_FIXTURE: &[u8] =
+  include_bytes!("fixtures/ui_init_400x100.bin");
 const FIXTURE_MAGIC: &[u8] = b"NVIMRSUI1\n";
 
 #[derive(Clone)]
@@ -343,6 +345,7 @@ fn bench_encode(c: &mut Criterion) {
 fn bench_decode(c: &mut Criterion) {
   let captured_ui_init = nvim_ui_fixture(NVIM_UI_FIXTURE);
   let captured_scroll_ui = nvim_ui_fixture(NVIM_UI_SCROLL_FIXTURE);
+  let captured_400x100_ui_init = nvim_ui_fixture(NVIM_UI_400X100_FIXTURE);
 
   let mut group = c.benchmark_group("rpc/decode");
 
@@ -400,6 +403,27 @@ fn bench_decode(c: &mut Criterion) {
           &mut decoder,
           bytes,
           scroll_ui_batch_count,
+        ))
+      },
+      BatchSize::SmallInput,
+    );
+  });
+
+  let ui_400x100_batch_count = captured_400x100_ui_init.len();
+  let ui_400x100_batch = captured_400x100_ui_init
+    .iter()
+    .flat_map(|msg| msg.bytes.iter().copied())
+    .collect::<Vec<_>>();
+  group.throughput(Throughput::Bytes(ui_400x100_batch.len() as u64));
+  group.bench_function("batch_nvim_400x100_ui_init", |b| {
+    let mut decoder = DecodeState::new();
+    b.iter_batched(
+      || ui_400x100_batch.clone(),
+      |bytes| {
+        black_box(decode_redraw_frames_from_reader(
+          &mut decoder,
+          bytes,
+          ui_400x100_batch_count,
         ))
       },
       BatchSize::SmallInput,
