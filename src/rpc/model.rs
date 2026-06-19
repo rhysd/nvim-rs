@@ -56,8 +56,7 @@ pub enum RpcMessage {
 pub struct DecodeState {
   rest: BytesMut,
   start: usize,
-  // OnceCell is not available because `get_mut_or_init` is not stabilized yet
-  read_buf: Option<Box<[u8; DECODE_READ_BUFFER_SIZE]>>,
+  read_buf: Box<[u8; DECODE_READ_BUFFER_SIZE]>,
 }
 
 impl Default for DecodeState {
@@ -68,20 +67,22 @@ impl Default for DecodeState {
 
 impl DecodeState {
   #[must_use]
+  #[inline]
   pub fn new() -> Self {
     Self {
       rest: BytesMut::new(),
       start: 0,
-      read_buf: None,
+      read_buf: Box::new([0; DECODE_READ_BUFFER_SIZE]),
     }
   }
 
+  #[cfg(test)]
   #[must_use]
   pub fn with_rest(rest: Vec<u8>) -> Self {
     Self {
       rest: BytesMut::from(&rest[..]),
       start: 0,
-      read_buf: None,
+      read_buf: Box::new([0; DECODE_READ_BUFFER_SIZE]),
     }
   }
 
@@ -131,15 +132,10 @@ impl DecodeState {
   {
     self.compact_rest();
 
-    let read_buf = self
-      .read_buf
-      .get_or_insert_with(|| Box::new([0; DECODE_READ_BUFFER_SIZE]))
-      .as_mut();
-
-    match reader.read(read_buf).await {
+    match reader.read(self.read_buf.as_mut()).await {
       Ok(0) => Err(io::Error::new(ErrorKind::UnexpectedEof, "EOF").into()),
       Ok(n) => {
-        self.rest.extend_from_slice(&read_buf[..n]);
+        self.rest.extend_from_slice(&self.read_buf[..n]);
         Ok(())
       }
       Err(err) => Err(err.into()),
