@@ -2,15 +2,12 @@
 //!
 //! This implements various possibilities to connect to neovim, including
 //! spawning an own child process. Available capabilities might depend on your
-//! OS and choice of features.
-//!
-//! Supported features: `use_tokio`.
+//! OS.
 //!
 //! **IMPORTANT**: Due to incompatibilities of the rust async ecosystem,  you
 //! might not be able to use types from one lib with the runtime of another lib.
-//! E.g. when using the features `use_tokio`, you will need to run all the
-//! API functions from inside the tokio runtime.
-#[cfg(feature = "use_tokio")]
+//! E.g. when using `create::tokio`, you will need to run all the API functions
+//! from inside the tokio runtime.
 pub mod tokio;
 
 use core::future::Future;
@@ -20,8 +17,7 @@ use crate::rpc::handler::Handler;
 
 /// A task to generalize spawning a future that returns `()`.
 ///
-/// If you use the feature `use_tokio`, this will automatically be implemented
-/// on your
+/// This is automatically implemented on your
 /// [`Handler`](crate::rpc::handler::Handler) using the appropriate runtime.
 ///
 /// If you have a runtime that brings appropriate types, you can implement this

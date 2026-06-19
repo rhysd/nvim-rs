@@ -601,7 +601,7 @@ async fn find_sender(
   Ok(sender)
 }
 
-#[cfg(all(test, feature = "use_tokio"))]
+#[cfg(test)]
 mod tests {
   use std::sync::{
     Arc,

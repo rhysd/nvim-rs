@@ -18,19 +18,4 @@ let seconds = reltimestr(reltime(start))
 call add(l, 'API Tokio: ' . seconds)
 
 
-let id = jobstart('target/release/examples/bench_sync', { 'rpc': v:true })
-
-let g:started_file = reltime()
-call rpcnotify(id, 'file')
-
-call rpcnotify(id, 'buffer')
-
-call rpcnotify(id, 'api')
-
-sleep 20
-
-call add(l, 'File Neovim-Lib: ' . g:finished_file)
-call add(l, 'Buffer Neovim-Lib: ' . g:finished_buffer)
-call add(l, 'API Neovim-Lib: ' . g:finished_api)
-
 call nvim_buf_set_lines(0, 0, -1, v:false, l)

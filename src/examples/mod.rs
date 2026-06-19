@@ -20,23 +20,17 @@
 //!
 //! A port of a real existing plugin.
 //!
-//! ## `bench_*`
+//! ## `bench_tokio`
 //!
 //! Some crude benchmarks to measure performance. After running
 //!
 //! ```sh
-//! cargo build --examples --features use_tokio --release
-//! cargo build --examples --features use_neovim_lib --release
+//! cargo build --examples --release
 //! ```
 //!
 //! (the features aren't all compatible, so you need to run those separately
 //! indeed) you can run `nvim -u bench_examples.vim`, and after so and so long
 //! get a table in a modified buffer that tells you some numbers.
-//!
-//! The benchmark of `neovim_lib` (called `bench_sync`) can't be designed the
-//! way the others are, since they use nested requests. I tried to get around
-//! that somewhat sneakily, but it's not 100% clear those benchmarks are
-//! equivalent (but, if anything, they should favor neovim-lib a tad).
 pub mod handler_drop;
 pub mod quitting;
 pub mod scorched_earth;

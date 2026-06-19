@@ -1,9 +1,7 @@
 #![allow(unused)]
 use navy_nvim_rs::rpc::handler::Dummy as DummyHandler;
 
-#[cfg(feature = "use_tokio")]
 use navy_nvim_rs::create::tokio as create;
-#[cfg(feature = "use_tokio")]
 use tokio::test as atest;
 
 use std::{
@@ -61,7 +59,7 @@ async fn can_connect_via_tcp() {
 #[cfg(unix)]
 fn get_socket_path() -> (std::path::PathBuf, TempDir) {
   let dir = Builder::new()
-    .prefix("neovim-lib.test")
+    .prefix("nvim-rs.test")
     .tempdir()
     .expect("Cannot create temporary directory for test.");
 

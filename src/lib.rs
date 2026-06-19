@@ -5,11 +5,8 @@
 //!
 //! ### Origins
 //!
-//! This library started as a fork of
-//! [neovim-lib](https://github.com/daa84/neovim-lib) with the goal to utilize
-//! Rust's `async/await` to allow requests/notification to/from neovim to be
-//! arbitrarily nested. After the fork, I started implementing more ideas I had
-//! for this library.
+//! This library uses Rust's `async/await` to allow
+//! requests/notification to/from neovim to be arbitrarily nested.
 //!
 //! ### Status
 //!
@@ -45,7 +42,6 @@ pub use crate::{
   uioptions::{UiAttachOptions, UiOption},
 };
 
-#[cfg(feature = "use_tokio")]
 pub mod compat {
   //! A re-export of tokio-util's [`Compat`](tokio_util::compat::Compat)
   pub mod tokio {

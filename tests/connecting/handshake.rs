@@ -1,10 +1,7 @@
 use navy_nvim_rs::rpc::handler::Dummy as DummyHandler;
 
-#[cfg(feature = "use_tokio")]
 use navy_nvim_rs::create::tokio as create;
-#[cfg(feature = "use_tokio")]
 use tokio::process::Command;
-#[cfg(feature = "use_tokio")]
 use tokio::test as atest;
 
 #[path = "../common/mod.rs"]

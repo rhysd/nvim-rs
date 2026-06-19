@@ -16,14 +16,13 @@ I'd love contributions, comments, praise, criticism... You could open an [issue]
 For some tests, neovim needs to be installed. Set the environment variable `NVIMRS_TEST_BIN` to
 the path of the binary before running the tests.
 
-Afterwards, you can simply run `cargo test --features="use_tokio"`.
-Also run `cargo build --examples --features="use_tokio"` as well as `cargo
-bench -- --test --features="use_tokio"` to make sure everything still compiles
-with the tokio integration enabled.
+Afterwards, you can simply run `cargo test`.
+Also run `cargo build --examples` as well as `cargo bench -- --test` to make
+sure everything still compiles.
 
 ## License
 
-As this is a fork of [neovim-lib](https://github.com/daa84/neovim-lib), it is licensed under the GNU Lesser General Public License v3.0.
+This project is licensed under the GNU Lesser General Public License v3.0.
 
 **IMPORTANT**: All commits to this project, including all PRs, are
 dual-licensed under the Apache or MIT license. This is to allow the possibility
