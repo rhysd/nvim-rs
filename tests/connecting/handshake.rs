@@ -7,13 +7,6 @@ use tokio::process::Command;
 #[cfg(feature = "use_tokio")]
 use tokio::test as atest;
 
-#[cfg(feature = "use_async-std")]
-use async_std::test as atest;
-#[cfg(feature = "use_async-std")]
-use navy_nvim_rs::create::async_std as create;
-#[cfg(feature = "use_async-std")]
-use std::process::Command;
-
 #[path = "../common/mod.rs"]
 mod common;
 use common::*;

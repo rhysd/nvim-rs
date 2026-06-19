@@ -4,7 +4,7 @@
 //! spawning an own child process. Available capabilities might depend on your
 //! OS and choice of features.
 //!
-//! Supported features: `use_tokio` and `use_async-std`.
+//! Supported features: `use_tokio`.
 //!
 //! **IMPORTANT**: Due to incompatibilities of the rust async ecosystem,  you
 //! might not be able to use types from one lib with the runtime of another lib.
@@ -13,9 +13,6 @@
 #[cfg(feature = "use_tokio")]
 pub mod tokio;
 
-#[cfg(feature = "use_async-std")]
-pub mod async_std;
-
 use core::future::Future;
 use std::{fs::File, io};
 
@@ -23,8 +20,8 @@ use crate::rpc::handler::Handler;
 
 /// A task to generalize spawning a future that returns `()`.
 ///
-/// If you use one of the features `use_tokio` or `use_async-std`, this will
-/// automatically be implemented on you
+/// If you use the feature `use_tokio`, this will automatically be implemented
+/// on your
 /// [`Handler`](crate::rpc::handler::Handler) using the appropriate runtime.
 ///
 /// If you have a runtime that brings appropriate types, you can implement this

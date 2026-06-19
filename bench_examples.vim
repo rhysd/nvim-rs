@@ -18,24 +18,6 @@ let seconds = reltimestr(reltime(start))
 call add(l, 'API Tokio: ' . seconds)
 
 
-let id = jobstart('target/release/examples/bench_async-std', { 'rpc': v:true })
-
-let start = reltime()
-call rpcrequest(id, 'file')
-let seconds = reltimestr(reltime(start))
-call add(l, 'File Async-Std: ' . seconds)
-
-let start = reltime()
-call rpcrequest(id, 'buffer')
-let seconds = reltimestr(reltime(start))
-call add(l, 'Buffer Async-Std: ' . seconds)
-
-let start = reltime()
-call rpcrequest(id, 'api')
-let seconds = reltimestr(reltime(start))
-call add(l, 'API Async-Std: ' . seconds)
-
-
 let id = jobstart('target/release/examples/bench_sync', { 'rpc': v:true })
 
 let g:started_file = reltime()

@@ -6,11 +6,6 @@ use navy_nvim_rs::create::tokio as create;
 #[cfg(feature = "use_tokio")]
 use tokio::test as atest;
 
-#[cfg(feature = "use_async-std")]
-use async_std::test as atest;
-#[cfg(feature = "use_async-std")]
-use navy_nvim_rs::create::async_std as create;
-
 use std::{
   path::Path,
   process::Command,
@@ -80,7 +75,6 @@ fn get_socket_path() -> (std::path::PathBuf, ()) {
   (name.into(), ())
 }
 
-#[cfg(not(all(feature = "use_async-std", windows)))]
 #[atest]
 async fn can_connect_via_path() {
   let (socket_path, _guard) = get_socket_path();

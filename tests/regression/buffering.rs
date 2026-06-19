@@ -9,10 +9,7 @@ fn viml_escape(in_str: &str) -> String {
 }
 
 fn linebuffercrashbin() -> &'static str {
-  #[cfg(feature = "use_tokio")]
-  return "linebuffercrash";
-  #[cfg(feature = "use_async-std")]
-  return "linebuffercrash_as";
+  "linebuffercrash"
 }
 
 #[test]

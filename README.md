@@ -19,8 +19,7 @@ the path of the binary before running the tests.
 Afterwards, you can simply run `cargo test --features="use_tokio"`.
 Also run `cargo build --examples --features="use_tokio"` as well as `cargo
 bench -- --test --features="use_tokio"` to make sure everything still compiles
-(replace `use_tokio` by `use_async-std` to do all the above with `async-std`
-instead of `tokio`). 
+with the tokio integration enabled.
 
 ## License
 
