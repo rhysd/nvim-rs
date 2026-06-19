@@ -1,5 +1,5 @@
-use futures::io::AsyncWrite;
 use rmpv::Value;
+use tokio::io::AsyncWrite;
 
 use super::{Buffer, Tabpage};
 use crate::{

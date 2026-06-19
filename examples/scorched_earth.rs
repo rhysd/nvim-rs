@@ -3,12 +3,10 @@ use std::{error::Error, sync::Arc};
 
 use rmpv::Value;
 
-use futures::lock::Mutex;
 use tokio::fs::File as TokioFile;
+use tokio::sync::Mutex;
 
-use navy_nvim_rs::{
-  Handler, Neovim, compat::tokio::Compat, create::tokio as create,
-};
+use navy_nvim_rs::{Handler, Neovim, create::tokio as create};
 
 struct Posis {
   cursor_start: Option<(u64, u64)>,
@@ -41,13 +39,13 @@ fn the_smaller(
 struct NeovimHandler(Arc<Mutex<Posis>>);
 
 impl Handler for NeovimHandler {
-  type Writer = Compat<TokioFile>;
+  type Writer = TokioFile;
 
   async fn handle_notify(
     &self,
     name: String,
     args: Vec<Value>,
-    neovim: Neovim<Compat<TokioFile>>,
+    neovim: Neovim<TokioFile>,
   ) {
     match name.as_ref() {
       "cursor-moved-i" => {

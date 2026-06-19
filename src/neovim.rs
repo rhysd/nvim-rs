@@ -7,17 +7,11 @@ use std::{
   },
 };
 
-use futures::{
-  TryFutureExt,
-  channel::{
-    mpsc::{UnboundedReceiver, UnboundedSender, unbounded},
-    oneshot,
-  },
-  future,
-  io::{AsyncRead, AsyncReadExt, AsyncWrite},
-  lock::Mutex,
-  sink::SinkExt,
-  stream::StreamExt,
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::sync::{
+  Mutex,
+  mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+  oneshot,
 };
 
 use crate::{
@@ -133,12 +127,16 @@ where
       }),
     };
 
-    let (sender, receiver) = unbounded();
-    let fut = future::try_join(
-      req.clone().io_loop(reader, sender),
-      req.clone().handler_loop(handler, receiver),
-    )
-    .map_ok(|_| ());
+    let (sender, receiver) = unbounded_channel();
+    let io_req = req.clone();
+    let handler_req = req.clone();
+    let fut = async move {
+      tokio::try_join!(
+        io_req.io_loop(reader, sender),
+        handler_req.handler_loop(handler, receiver),
+      )
+      .map(|_| ())
+    };
 
     (req, fut)
   }
@@ -232,12 +230,16 @@ where
       }
     }
 
-    let (sender, receiver) = unbounded();
-    let fut = future::try_join(
-      instance.clone().io_loop(reader, sender),
-      instance.clone().handler_loop(handler, receiver),
-    )
-    .map_ok(|_| ());
+    let (sender, receiver) = unbounded_channel();
+    let io_instance = instance.clone();
+    let handler_instance = instance.clone();
+    let fut = async move {
+      tokio::try_join!(
+        io_instance.io_loop(reader, sender),
+        handler_instance.handler_loop(handler, receiver),
+      )
+      .map(|_| ())
+    };
 
     Ok((instance, fut))
   }
@@ -409,7 +411,7 @@ where
     H: Handler<Writer = W> + Spawner,
   {
     loop {
-      let msg = match receiver.next().await {
+      let msg = match receiver.recv().await {
         Some(msg) => msg,
         /* If our receiver closes, that just means that io_handler started
          * shutting down. This is normal, so shut down along with it and don't
@@ -464,7 +466,7 @@ where
   async fn io_loop<R>(
     self,
     mut reader: R,
-    mut sender: UnboundedSender<HandlerMessage>,
+    sender: UnboundedSender<HandlerMessage>,
   ) -> Result<(), Box<LoopError>>
   where
     R: AsyncRead + Send + Unpin + 'static,
@@ -499,7 +501,7 @@ where
         }
         msg => {
           // Send message to handler_loop()
-          sender.send(msg).await.unwrap();
+          sender.send(msg).unwrap();
         }
       }
     }
@@ -608,8 +610,8 @@ mod tests {
     atomic::{AtomicU64, AtomicUsize, Ordering},
   };
 
-  use futures::{SinkExt, executor::block_on, io::Cursor};
   use rmpv::encode::write_value;
+  use std::io::Cursor;
 
   use super::*;
   use crate::rpc::redraw::{RedrawDecodeResult, RedrawNotification};
@@ -620,7 +622,7 @@ mod tests {
   }
 
   impl Handler for CountingHandler {
-    type Writer = Cursor<Vec<u8>>;
+    type Writer = Vec<u8>;
 
     fn handle_redraw(
       &self,
@@ -650,18 +652,18 @@ mod tests {
     ]))
   }
 
-  fn test_neovim() -> Neovim<Cursor<Vec<u8>>> {
+  fn test_neovim() -> Neovim<Vec<u8>> {
     Neovim {
       inner: Arc::new(NeovimInner {
-        writer: Mutex::new(model::EncodeState::new(Cursor::new(Vec::new()))),
+        writer: Mutex::new(model::EncodeState::new(Vec::new())),
         queue: Mutex::new(Vec::new()),
         msgid_counter: AtomicU64::new(0),
       }),
     }
   }
 
-  #[test]
-  fn decode_next_waits_for_complete_redraw_prefix() {
+  #[tokio::test]
+  async fn decode_next_waits_for_complete_redraw_prefix() {
     let redraw = redraw_bytes();
     let prefix = [0x93, b'\x02', 0xa6, b'r', b'e', b'd', b'r', b'a', b'w'];
 
@@ -669,11 +671,9 @@ mod tests {
 
     let mut decoder = model::DecodeState::with_rest(prefix.to_vec());
     let mut reader = Cursor::new(redraw[prefix.len()..].to_vec());
-    let msg = block_on(Neovim::<Cursor<Vec<u8>>>::decode_next(
-      &mut decoder,
-      &mut reader,
-    ))
-    .unwrap();
+    let msg = Neovim::<Vec<u8>>::decode_next(&mut decoder, &mut reader)
+      .await
+      .unwrap();
 
     match msg {
       HandlerMessage::RedrawPayload(frame) => {
@@ -683,50 +683,43 @@ mod tests {
     }
   }
 
-  #[test]
-  fn handler_loop_handles_redraw_message() {
-    let (mut sender, receiver) = unbounded();
+  #[tokio::test]
+  async fn handler_loop_handles_redraw_message() {
+    let (sender, receiver) = unbounded_channel();
     let redraw_count = Arc::new(AtomicUsize::new(0));
     let handler = CountingHandler {
       redraw_count: redraw_count.clone(),
     };
 
-    block_on(async {
-      let frame = RedrawFrame::from_slice(&redraw_bytes()).unwrap();
-      sender
-        .send(HandlerMessage::RedrawPayload(frame))
-        .await
-        .unwrap();
-      drop(sender);
+    let frame = RedrawFrame::from_slice(&redraw_bytes()).unwrap();
+    sender.send(HandlerMessage::RedrawPayload(frame)).unwrap();
+    drop(sender);
 
-      test_neovim().handler_loop(handler, receiver).await.unwrap();
-    });
+    test_neovim().handler_loop(handler, receiver).await.unwrap();
 
     assert_eq!(redraw_count.load(Ordering::Relaxed), 1);
   }
 
-  #[test]
-  fn notify_value_ref_writes_notification_without_queueing_request() {
+  #[tokio::test]
+  async fn notify_value_ref_writes_notification_without_queueing_request() {
     let nvim = test_neovim();
 
-    block_on(async {
-      nvim
-        .notify_value_ref("nvim_ui_set_focus", &[ValueRef::Boolean(true)])
-        .await
-        .unwrap();
+    nvim
+      .notify_value_ref("nvim_ui_set_focus", &[ValueRef::Boolean(true)])
+      .await
+      .unwrap();
 
-      assert!(nvim.inner.queue.lock().await.is_empty());
+    assert!(nvim.inner.queue.lock().await.is_empty());
 
-      let writer = nvim.inner.writer.lock().await;
-      assert_eq!(
-        writer.writer().get_ref(),
-        &encoded_value(Value::from(vec![
-          Value::from(2),
-          Value::from("nvim_ui_set_focus"),
-          Value::from(vec![Value::from(true)]),
-        ]))
-      );
-    });
+    let writer = nvim.inner.writer.lock().await;
+    assert_eq!(
+      writer.writer(),
+      &encoded_value(Value::from(vec![
+        Value::from(2),
+        Value::from("nvim_ui_set_focus"),
+        Value::from(vec![Value::from(true)]),
+      ]))
+    );
   }
 
   #[tokio::test]

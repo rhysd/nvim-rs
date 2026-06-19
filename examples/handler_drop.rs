@@ -1,8 +1,6 @@
 //! How to handle cleanup logic with access to the handler's data. See
 //! src/examples/handler_drop.rs for documentation.
-use navy_nvim_rs::{
-  Handler, Neovim, Value, compat::tokio::Compat, create::tokio as create,
-};
+use navy_nvim_rs::{Handler, Neovim, Value, create::tokio as create};
 
 use tokio::process::{ChildStdin, Command};
 
@@ -22,13 +20,13 @@ struct NeovimHandler {
 }
 
 impl Handler for NeovimHandler {
-  type Writer = Compat<ChildStdin>;
+  type Writer = ChildStdin;
 
   async fn handle_notify(
     &self,
     name: String,
     args: Vec<Value>,
-    req: Neovim<Compat<ChildStdin>>,
+    req: Neovim<ChildStdin>,
   ) {
     match name.as_ref() {
       "nvim_buf_lines_event" => {

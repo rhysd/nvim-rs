@@ -32,10 +32,7 @@
 //! ## Description
 //!
 //! * The associated type for our [`Handler`](crate::rpc::handler::Handler) is
-//!   the stdin of our child. But tokio's
-//!   [`ChildStdin`](tokio::process::ChildStdin) does not implement
-//!   [`futures::io::AsyncWrite`](futures::io::AsyncWrite), so it needs to be
-//!   wrapped in the provided [`Compat`](crate::compat::tokio::Compat) type.
+//!   the stdin of our child, [`ChildStdin`](tokio::process::ChildStdin).
 //!
 //! * Implementing [`Drop`](std::ops::Drop) is straightforward, except that we
 //!   cannot do so asynchronously. Since dropping the handler is one of the last
@@ -52,5 +49,4 @@
 //! * `await`ing the io future handle is probably not necessary, but feels like
 //!   a nice thing to do.
 //!
-//! * As with the other examples, we implement [`Spawn`](futures::task::Spawn)
-//!   for our `NeovimHandler` most trivially.
+//! * As with the other examples, the handler is spawned on the tokio runtime.

@@ -4,10 +4,7 @@
 //! spawning an own child process. Available capabilities might depend on your
 //! OS.
 //!
-//! **IMPORTANT**: Due to incompatibilities of the rust async ecosystem,  you
-//! might not be able to use types from one lib with the runtime of another lib.
-//! E.g. when using `create::tokio`, you will need to run all the API functions
-//! from inside the tokio runtime.
+//! API functions should be run from inside the tokio runtime.
 pub mod tokio;
 
 use core::future::Future;

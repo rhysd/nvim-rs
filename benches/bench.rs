@@ -1,11 +1,7 @@
 use bytes::Bytes;
 use criterion::{
-  BatchSize, BenchmarkId, Criterion, Throughput,
-  async_executor::FuturesExecutor, criterion_group, criterion_main,
-};
-use futures::{
-  io::{Cursor, sink},
-  lock::Mutex,
+  BatchSize, BenchmarkId, Criterion, Throughput, criterion_group,
+  criterion_main,
 };
 use navy_nvim_rs::rpc::{
   model::{
@@ -18,7 +14,16 @@ use navy_nvim_rs::rpc::{
   },
 };
 use rmpv::{Value, decode::read_value};
-use std::{collections::HashSet, hint::black_box};
+use std::{
+  collections::HashSet,
+  hint::black_box,
+  io::{self, Cursor},
+  pin::Pin,
+  task::{Context, Poll},
+};
+use tokio::io::AsyncWrite;
+use tokio::runtime::{Builder, Runtime};
+use tokio::sync::Mutex;
 
 const NVIM_UI_FIXTURE: &[u8] =
   include_bytes!("fixtures/nvim_ui_notifications.bin");
@@ -40,6 +45,32 @@ struct BenchInput {
   bytes: Bytes,
 }
 
+struct NoopWriter;
+
+impl AsyncWrite for NoopWriter {
+  fn poll_write(
+    self: Pin<&mut Self>,
+    _cx: &mut Context<'_>,
+    buf: &[u8],
+  ) -> Poll<io::Result<usize>> {
+    Poll::Ready(Ok(buf.len()))
+  }
+
+  fn poll_flush(
+    self: Pin<&mut Self>,
+    _cx: &mut Context<'_>,
+  ) -> Poll<io::Result<()>> {
+    Poll::Ready(Ok(()))
+  }
+
+  fn poll_shutdown(
+    self: Pin<&mut Self>,
+    _cx: &mut Context<'_>,
+  ) -> Poll<io::Result<()>> {
+    Poll::Ready(Ok(()))
+  }
+}
+
 fn encode_request_message() -> RpcMessage {
   RpcMessage::RpcRequest {
     msgid: 1,
@@ -57,6 +88,10 @@ fn encode_message(msg: RpcMessage) -> Vec<u8> {
   let mut bytes = Vec::new();
   encode_sync(&mut bytes, msg).unwrap();
   bytes
+}
+
+fn async_bench_runtime() -> Runtime {
+  Builder::new_current_thread().enable_all().build().unwrap()
 }
 
 fn non_redraw_rpc_batch(count: usize) -> Vec<u8> {
@@ -295,12 +330,13 @@ fn selected_ui_inputs(captured: &[CapturedMessage]) -> Vec<BenchInput> {
 
 fn bench_encode(c: &mut Criterion) {
   let request_msg = encode_request_message();
+  let runtime = async_bench_runtime();
   let mut group = c.benchmark_group("rpc/encode");
 
   group.bench_function("request", |b| {
-    let state = Mutex::new(EncodeState::new(sink()));
+    let state = Mutex::new(EncodeState::new(NoopWriter));
     let state = &state;
-    b.to_async(FuturesExecutor).iter_batched(
+    b.to_async(&runtime).iter_batched(
       || request_msg.clone(),
       |msg| async move {
         black_box(encode_to_state(state, msg).await.unwrap())
@@ -310,9 +346,9 @@ fn bench_encode(c: &mut Criterion) {
   });
 
   group.bench_function("nvim_input_ctrl_d", |b| {
-    let state = Mutex::new(EncodeState::new(sink()));
+    let state = Mutex::new(EncodeState::new(NoopWriter));
     let state = &state;
-    b.to_async(FuturesExecutor).iter(|| async move {
+    b.to_async(&runtime).iter(|| async move {
       encode_single_string_arg_msg_to_state(
         state,
         MessageType::Request(1),
@@ -325,9 +361,9 @@ fn bench_encode(c: &mut Criterion) {
   });
 
   group.bench_function("nvim_input_ctrl_d_notify", |b| {
-    let state = Mutex::new(EncodeState::new(sink()));
+    let state = Mutex::new(EncodeState::new(NoopWriter));
     let state = &state;
-    b.to_async(FuturesExecutor).iter(|| async move {
+    b.to_async(&runtime).iter(|| async move {
       encode_single_string_arg_msg_to_state(
         state,
         MessageType::Notification,
@@ -343,6 +379,7 @@ fn bench_encode(c: &mut Criterion) {
 }
 
 fn bench_decode(c: &mut Criterion) {
+  let runtime = async_bench_runtime();
   let captured_ui_init = nvim_ui_fixture(NVIM_UI_FIXTURE);
   let captured_scroll_ui = nvim_ui_fixture(NVIM_UI_SCROLL_FIXTURE);
   let captured_400x100_ui_init = nvim_ui_fixture(NVIM_UI_400X100_FIXTURE);
@@ -355,7 +392,7 @@ fn bench_decode(c: &mut Criterion) {
       BenchmarkId::new("single_nvim_ui_init", &input.name),
       &input.bytes,
       |b, bytes| {
-        b.to_async(FuturesExecutor).iter_batched(
+        b.to_async(&runtime).iter_batched(
           || (DecodeState::new(), bytes.to_vec()),
           |(mut decoder, bytes)| async move {
             black_box(
@@ -375,7 +412,7 @@ fn bench_decode(c: &mut Criterion) {
     .collect::<Vec<_>>();
   group.throughput(Throughput::Bytes(ui_batch.len() as u64));
   group.bench_function("batch_nvim_ui_init", |b| {
-    b.to_async(FuturesExecutor).iter_batched(
+    b.to_async(&runtime).iter_batched(
       || (DecodeState::new(), ui_batch.clone()),
       |(mut decoder, bytes)| async move {
         black_box(
@@ -394,7 +431,7 @@ fn bench_decode(c: &mut Criterion) {
     .collect::<Vec<_>>();
   group.throughput(Throughput::Bytes(scroll_ui_batch.len() as u64));
   group.bench_function("batch_nvim_ui_scroll", |b| {
-    b.to_async(FuturesExecutor).iter_batched(
+    b.to_async(&runtime).iter_batched(
       || (DecodeState::new(), scroll_ui_batch.clone()),
       |(mut decoder, bytes)| async move {
         black_box(
@@ -417,7 +454,7 @@ fn bench_decode(c: &mut Criterion) {
     .collect::<Vec<_>>();
   group.throughput(Throughput::Bytes(ui_400x100_batch.len() as u64));
   group.bench_function("batch_nvim_400x100_ui_init", |b| {
-    b.to_async(FuturesExecutor).iter_batched(
+    b.to_async(&runtime).iter_batched(
       || (DecodeState::new(), ui_400x100_batch.clone()),
       |(mut decoder, bytes)| async move {
         black_box(
@@ -437,7 +474,7 @@ fn bench_decode(c: &mut Criterion) {
   let non_redraw_rpc_batch = non_redraw_rpc_batch(NON_REDRAW_RPC_BATCH_COUNT);
   group.throughput(Throughput::Bytes(non_redraw_rpc_batch.len() as u64));
   group.bench_function("non_redraw_rpc_batch", |b| {
-    b.to_async(FuturesExecutor).iter_batched(
+    b.to_async(&runtime).iter_batched(
       || (DecodeState::new(), non_redraw_rpc_batch.clone()),
       |(mut decoder, bytes)| async move {
         black_box(

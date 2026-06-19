@@ -1,5 +1,5 @@
-use futures::io::AsyncWrite;
 use rmpv::Value;
+use tokio::io::AsyncWrite;
 
 use crate::{
   Neovim, error::CallError, exttypes::Window, impl_exttype_traits,

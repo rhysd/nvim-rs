@@ -42,11 +42,4 @@ pub use crate::{
   uioptions::{UiAttachOptions, UiOption},
 };
 
-pub mod compat {
-  //! A re-export of tokio-util's [`Compat`](tokio_util::compat::Compat)
-  pub mod tokio {
-    pub use tokio_util::compat::Compat;
-  }
-}
-
 pub use rmpv::Value;

@@ -6,10 +6,6 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use futures::{
-  io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-  lock::Mutex,
-};
 use rmp::{
   Marker,
   decode::ValueReadError,
@@ -20,6 +16,8 @@ use rmpv::{
   decode::read_value,
   encode::{write_value, write_value_ref},
 };
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::Mutex;
 
 use crate::error::{DecodeError, EncodeError, InvalidMessage};
 
@@ -355,7 +353,7 @@ fn read_value_from_marker<R: Read>(
   marker: Marker,
 ) -> Result<Value, Box<DecodeError>> {
   let marker = [marker.to_u8()];
-  let mut value_reader = io::Cursor::new(marker).chain(reader);
+  let mut value_reader = Read::chain(io::Cursor::new(marker), reader);
   read_value(&mut value_reader).map_err(Into::into)
 }
 
@@ -645,7 +643,7 @@ impl IntoVal<Value> for Vec<(Value, Value)> {
 mod decode_state_tests {
   use super::*;
   use crate::rpc::redraw::{RedrawFrame, RedrawNotification};
-  use futures::{executor::block_on, io::Cursor};
+  use std::io::Cursor;
 
   fn request(msgid: u64, method: &str) -> RpcMessage {
     RpcMessage::RpcRequest {
@@ -671,21 +669,19 @@ mod decode_state_tests {
     RedrawFrame::from_slice(bytes).unwrap()
   }
 
-  fn decode_next_from_state(
+  async fn decode_next_from_state(
     decoder: &mut DecodeState,
     reader: &mut Cursor<Vec<u8>>,
   ) -> RpcMessage {
-    block_on(async {
-      loop {
-        while decoder.has_rest() {
-          if let Some(msg) = decoder.try_decode_message().unwrap() {
-            return msg;
-          }
+    loop {
+      while decoder.has_rest() {
+        if let Some(msg) = decoder.try_decode_message().unwrap() {
+          return msg;
         }
-
-        decoder.read_next_chunk(reader).await.unwrap();
       }
-    })
+
+      decoder.read_next_chunk(reader).await.unwrap();
+    }
   }
 
   #[test]
@@ -895,8 +891,8 @@ mod decode_state_tests {
     );
   }
 
-  #[test]
-  fn decode_state_decodes_concatenated_messages() {
+  #[tokio::test]
+  async fn decode_state_decodes_concatenated_messages() {
     let msg_1 = request(1, "test_method");
     let msg_2 = request(2, "test_method_2");
 
@@ -906,8 +902,14 @@ mod decode_state_tests {
     let mut reader = Cursor::new(bytes);
     let mut decoder = DecodeState::new();
 
-    assert_eq!(decode_next_from_state(&mut decoder, &mut reader), msg_1);
-    assert_eq!(decode_next_from_state(&mut decoder, &mut reader), msg_2);
+    assert_eq!(
+      decode_next_from_state(&mut decoder, &mut reader).await,
+      msg_1
+    );
+    assert_eq!(
+      decode_next_from_state(&mut decoder, &mut reader).await,
+      msg_2
+    );
   }
 
   #[test]
@@ -965,8 +967,9 @@ mod decode_state_tests {
 #[cfg(test)]
 mod test {
   use super::*;
-  use futures::{io::BufWriter, lock::Mutex};
   use std::{io::Cursor, sync::Arc};
+  use tokio::io::BufWriter;
+  use tokio::sync::Mutex;
 
   #[tokio::test]
   async fn request_test() {

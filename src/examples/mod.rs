@@ -28,9 +28,8 @@
 //! cargo build --examples --release
 //! ```
 //!
-//! (the features aren't all compatible, so you need to run those separately
-//! indeed) you can run `nvim -u bench_examples.vim`, and after so and so long
-//! get a table in a modified buffer that tells you some numbers.
+//! you can run `nvim -u bench_examples.vim`, and after so and so long get a
+//! table in a modified buffer that tells you some numbers.
 pub mod handler_drop;
 pub mod quitting;
 pub mod scorched_earth;

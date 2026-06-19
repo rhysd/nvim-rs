@@ -21,10 +21,6 @@ type Connection = tokio::net::UnixStream;
 #[cfg(windows)]
 type Connection = tokio::net::windows::named_pipe::NamedPipeClient;
 
-use tokio_util::compat::{
-  Compat, TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt,
-};
-
 use crate::{
   Handler,
   create::{Spawner, unbuffered_stdout},
@@ -51,20 +47,17 @@ pub async fn new_tcp<A, H>(
   addr: A,
   handler: H,
 ) -> io::Result<(
-  Neovim<Compat<WriteHalf<TcpStream>>>,
+  Neovim<WriteHalf<TcpStream>>,
   JoinHandle<Result<(), Box<LoopError>>>,
 )>
 where
-  H: Handler<Writer = Compat<WriteHalf<TcpStream>>>,
+  H: Handler<Writer = WriteHalf<TcpStream>>,
   A: ToSocketAddrs,
 {
   let stream = TcpStream::connect(addr).await?;
   let (reader, writer) = split(stream);
-  let (neovim, io) = Neovim::<Compat<WriteHalf<TcpStream>>>::new(
-    reader.compat(),
-    writer.compat_write(),
-    handler,
-  );
+  let (neovim, io) =
+    Neovim::<WriteHalf<TcpStream>>::new(reader, writer, handler);
   let io_handle = spawn(io);
 
   Ok((neovim, io_handle))
@@ -75,11 +68,11 @@ pub async fn new_path<H, P: AsRef<Path> + Clone>(
   path: P,
   handler: H,
 ) -> io::Result<(
-  Neovim<Compat<WriteHalf<Connection>>>,
+  Neovim<WriteHalf<Connection>>,
   JoinHandle<Result<(), Box<LoopError>>>,
 )>
 where
-  H: Handler<Writer = Compat<WriteHalf<Connection>>> + Send + 'static,
+  H: Handler<Writer = WriteHalf<Connection>> + Send + 'static,
 {
   let stream = {
     #[cfg(unix)]
@@ -112,11 +105,8 @@ where
     }
   };
   let (reader, writer) = split(stream);
-  let (neovim, io) = Neovim::<Compat<WriteHalf<Connection>>>::new(
-    reader.compat(),
-    writer.compat_write(),
-    handler,
-  );
+  let (neovim, io) =
+    Neovim::<WriteHalf<Connection>>::new(reader, writer, handler);
   let io_handle = spawn(io);
 
   Ok((neovim, io_handle))
@@ -126,12 +116,12 @@ where
 pub async fn new_child<H>(
   handler: H,
 ) -> io::Result<(
-  Neovim<Compat<ChildStdin>>,
+  Neovim<ChildStdin>,
   JoinHandle<Result<(), Box<LoopError>>>,
   Child,
 )>
 where
-  H: Handler<Writer = Compat<ChildStdin>> + Send + 'static,
+  H: Handler<Writer = ChildStdin> + Send + 'static,
 {
   if cfg!(target_os = "windows") {
     new_child_path("nvim.exe", handler).await
@@ -145,12 +135,12 @@ pub async fn new_child_path<H, S: AsRef<Path>>(
   program: S,
   handler: H,
 ) -> io::Result<(
-  Neovim<Compat<ChildStdin>>,
+  Neovim<ChildStdin>,
   JoinHandle<Result<(), Box<LoopError>>>,
   Child,
 )>
 where
-  H: Handler<Writer = Compat<ChildStdin>> + Send + 'static,
+  H: Handler<Writer = ChildStdin> + Send + 'static,
 {
   let mut cmd = Command::new(program.as_ref());
   cmd.arg("--embed");
@@ -164,26 +154,24 @@ pub fn new_child_cmd<H>(
   mut cmd: Command,
   handler: H,
 ) -> io::Result<(
-  Neovim<Compat<ChildStdin>>,
+  Neovim<ChildStdin>,
   JoinHandle<Result<(), Box<LoopError>>>,
   Child,
 )>
 where
-  H: Handler<Writer = Compat<ChildStdin>> + Send + 'static,
+  H: Handler<Writer = ChildStdin> + Send + 'static,
 {
   let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
   let stdout = child
     .stdout
     .take()
-    .ok_or_else(|| Error::other("Can't open stdout"))?
-    .compat();
+    .ok_or_else(|| Error::other("Can't open stdout"))?;
   let stdin = child
     .stdin
     .take()
-    .ok_or_else(|| Error::other("Can't open stdin"))?
-    .compat_write();
+    .ok_or_else(|| Error::other("Can't open stdin"))?;
 
-  let (neovim, io) = Neovim::<Compat<ChildStdin>>::new(stdout, stdin, handler);
+  let (neovim, io) = Neovim::<ChildStdin>::new(stdout, stdin, handler);
   let io_handle = spawn(io);
 
   Ok((neovim, io_handle, child))
@@ -194,21 +182,17 @@ pub async fn new_parent<H>(
   handler: H,
 ) -> Result<
   (
-    Neovim<Compat<tokio::fs::File>>,
+    Neovim<tokio::fs::File>,
     JoinHandle<Result<(), Box<LoopError>>>,
   ),
   Error,
 >
 where
-  H: Handler<Writer = Compat<tokio::fs::File>>,
+  H: Handler<Writer = tokio::fs::File>,
 {
   let sout = TokioFile::from_std(unbuffered_stdout()?);
 
-  let (neovim, io) = Neovim::<Compat<tokio::fs::File>>::new(
-    stdin().compat(),
-    sout.compat(),
-    handler,
-  );
+  let (neovim, io) = Neovim::<tokio::fs::File>::new(stdin(), sout, handler);
   let io_handle = spawn(io);
 
   Ok((neovim, io_handle))
@@ -228,30 +212,27 @@ pub async fn new_child_handshake_cmd<H>(
   message: &str,
 ) -> Result<
   (
-    Neovim<Compat<ChildStdin>>,
+    Neovim<ChildStdin>,
     JoinHandle<Result<(), Box<LoopError>>>,
     Child,
   ),
   Box<HandshakeError>,
 >
 where
-  H: Handler<Writer = Compat<ChildStdin>> + Send + 'static,
+  H: Handler<Writer = ChildStdin> + Send + 'static,
 {
   let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
   let stdout = child
     .stdout
     .take()
-    .ok_or_else(|| Error::other("Can't open stdout"))?
-    .compat();
+    .ok_or_else(|| Error::other("Can't open stdout"))?;
   let stdin = child
     .stdin
     .take()
-    .ok_or_else(|| Error::other("Can't open stdin"))?
-    .compat_write();
+    .ok_or_else(|| Error::other("Can't open stdin"))?;
 
   let (neovim, io) =
-    Neovim::<Compat<ChildStdin>>::handshake(stdout, stdin, handler, message)
-      .await?;
+    Neovim::<ChildStdin>::handshake(stdout, stdin, handler, message).await?;
   let io_handle = spawn(io);
 
   Ok((neovim, io_handle, child))

@@ -4,8 +4,8 @@
 //! [`handler`](crate::rpc::handler::Handler).
 use std::{future::Future, marker::PhantomData, sync::Arc};
 
-use futures::io::AsyncWrite;
 use rmpv::Value;
+use tokio::io::AsyncWrite;
 
 use crate::{
   Neovim,

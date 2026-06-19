@@ -1,7 +1,7 @@
 //! The auto generated API for [`neovim`](crate::neovim::Neovim)
 //!
 //! Auto generated 2025-03-01 14:48:09.493596
-use futures::io::AsyncWrite;
+use tokio::io::AsyncWrite;
 
 use crate::{
   Buffer, Tabpage, Window,

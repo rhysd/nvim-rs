@@ -1,5 +1,5 @@
-use futures::io::AsyncWrite;
 use rmpv::Value;
+use tokio::io::AsyncWrite;
 
 use crate::{Neovim, impl_exttype_traits, rpc::model::IntoVal};
 /// A struct representing a neovim buffer. It is specific to a

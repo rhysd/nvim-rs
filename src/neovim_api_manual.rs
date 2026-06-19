@@ -1,6 +1,6 @@
 //! Some manually implemented API functions
-use futures::io::AsyncWrite;
 use rmpv::{Value, ValueRef};
+use tokio::io::AsyncWrite;
 
 use crate::{
   Buffer, Tabpage, Window,

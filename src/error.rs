@@ -40,10 +40,10 @@ use std::{
   sync::Arc,
 };
 
-use futures::channel::oneshot;
 use rmpv::{
   Value, decode::Error as RmpvDecodeError, encode::Error as RmpvEncodeError,
 };
+use tokio::sync::oneshot;
 
 /// A message from neovim had an invalid format
 ///
@@ -224,7 +224,7 @@ pub enum CallError {
   ///
   /// 0. The underlying error
   /// 1. The name of the called method
-  InternalReceiveError(oneshot::Canceled, String),
+  InternalReceiveError(oneshot::error::RecvError, String),
   /// Decoding neovim's response failed.
   ///
   /// Fields:

@@ -1,6 +1,4 @@
-use navy_nvim_rs::{
-  Handler, compat::tokio::Compat, create::tokio as create, neovim::Neovim,
-};
+use navy_nvim_rs::{Handler, create::tokio as create, neovim::Neovim};
 
 use rmpv::Value;
 
@@ -12,7 +10,7 @@ use tokio::{
   spawn,
 };
 
-use futures::lock::Mutex;
+use tokio::sync::Mutex;
 
 mod common;
 use common::*;
@@ -23,13 +21,13 @@ struct NeovimHandler {
 }
 
 impl Handler for NeovimHandler {
-  type Writer = Compat<ChildStdin>;
+  type Writer = ChildStdin;
 
   async fn handle_request(
     &self,
     name: String,
     args: Vec<Value>,
-    neovim: Neovim<Compat<ChildStdin>>,
+    neovim: Neovim<ChildStdin>,
   ) -> Result<Value, Value> {
     match name.as_ref() {
       "dummy" => Ok(Value::from("o")),
@@ -91,7 +89,7 @@ impl Handler for NeovimHandler {
     &self,
     name: String,
     args: Vec<Value>,
-    _neovim: Neovim<Compat<ChildStdin>>,
+    _neovim: Neovim<ChildStdin>,
   ) {
     match name.as_ref() {
       "set_froodle" => {

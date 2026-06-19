@@ -9,11 +9,7 @@ use tokio::{
   task::yield_now,
 };
 
-use futures::FutureExt;
-
-use navy_nvim_rs::{
-  self, Value, compat::tokio::Compat, create::tokio as create, neovim::Neovim,
-};
+use navy_nvim_rs::{self, Value, create::tokio as create, neovim::Neovim};
 
 mod common;
 use common::*;
@@ -23,9 +19,11 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 
 macro_rules! timeout {
   ($x:expr) => {
-    tokio::time::timeout(TIMEOUT, $x).map(|res| {
-      res.expect(&format!("Timed out waiting for {}", stringify!($x)))
-    })
+    async {
+      tokio::time::timeout(TIMEOUT, $x)
+        .await
+        .expect(&format!("Timed out waiting for {}", stringify!($x)))
+    }
   };
 }
 
@@ -36,7 +34,7 @@ struct Handler {
 }
 
 impl navy_nvim_rs::Handler for Handler {
-  type Writer = Compat<ChildStdin>;
+  type Writer = ChildStdin;
 
   async fn handle_notify(
     &self,

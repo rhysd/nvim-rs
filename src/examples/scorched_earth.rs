@@ -21,9 +21,7 @@
 //! Some overview over the code:
 //!
 //! * The associated type for our [`Handler`](crate::rpc::handler::Handler) is
-//!   out stdout. But tokio's [`Stdout`](tokio::io::Stdout) does not implement
-//!   [`futures::io::AsyncWrite`](futures::io::AsyncWrite), so it needs to be
-//!   wrapped in the provided [`Compat`](crate::compat::tokio::Compat) type.
+//!   the tokio file used for writing to neovim over stdout.
 //!
 //! * The handler struct `NeovimHandler` needs to contain some plugin state,
 //!   namely two cursor positions `start` and `end`. It needs to be `Send` and
@@ -67,5 +65,4 @@
 //!   *Note*: A closed channel could still mean an error, so the plugin has the
 //!   option to react to this.
 //!
-//! * As with the other examples, we implement [`Spawn`](futures::task::Spawn)
-//!   for our `NeovimHandler` most trivially.
+//! * As with the other examples, the handler is spawned on the tokio runtime.

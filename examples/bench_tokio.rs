@@ -4,21 +4,19 @@ use rmpv::Value;
 
 use tokio::fs::File as TokioFile;
 
-use navy_nvim_rs::{
-  Handler, Neovim, compat::tokio::Compat, create::tokio as create,
-};
+use navy_nvim_rs::{Handler, Neovim, create::tokio as create};
 
 #[derive(Clone)]
 struct NeovimHandler {}
 
 impl Handler for NeovimHandler {
-  type Writer = Compat<TokioFile>;
+  type Writer = TokioFile;
 
   async fn handle_request(
     &self,
     name: String,
     _args: Vec<Value>,
-    neovim: Neovim<Compat<TokioFile>>,
+    neovim: Neovim<TokioFile>,
   ) -> Result<Value, Value> {
     match name.as_ref() {
       "file" => {
