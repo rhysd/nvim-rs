@@ -5,7 +5,7 @@ use std::{
   io::{self, ErrorKind, Read, Write},
 };
 
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 use rmp::{
   Marker,
   decode::ValueReadError,
@@ -54,6 +54,7 @@ pub enum RpcMessage {
 pub struct DecodeState {
   rest: BytesMut,
   start: usize,
+  read_buf: Box<[u8; DECODE_READ_BUFFER_SIZE]>,
 }
 
 impl Default for DecodeState {
@@ -67,8 +68,9 @@ impl DecodeState {
   #[inline]
   pub fn new() -> Self {
     Self {
-      rest: BytesMut::with_capacity(DECODE_READ_BUFFER_SIZE),
+      rest: BytesMut::new(),
       start: 0,
+      read_buf: Box::new([0; DECODE_READ_BUFFER_SIZE]),
     }
   }
 
@@ -78,6 +80,7 @@ impl DecodeState {
     Self {
       rest: BytesMut::from(&rest[..]),
       start: 0,
+      read_buf: Box::new([0; DECODE_READ_BUFFER_SIZE]),
     }
   }
 
@@ -127,15 +130,12 @@ impl DecodeState {
   {
     self.compact_rest();
 
-    if self.rest.capacity() == self.rest.len()
-      && !self.rest.try_reclaim(DECODE_READ_BUFFER_SIZE)
-    {
-      self.rest.reserve(DECODE_READ_BUFFER_SIZE);
-    }
-
-    match reader.read_buf(&mut self.rest).await {
+    match reader.read(self.read_buf.as_mut()).await {
       Ok(0) => Err(io::Error::new(ErrorKind::UnexpectedEof, "EOF").into()),
-      Ok(_) => Ok(()),
+      Ok(n) => {
+        self.rest.extend_from_slice(&self.read_buf[..n]);
+        Ok(())
+      }
       Err(err) => Err(err.into()),
     }
   }
@@ -145,7 +145,7 @@ impl DecodeState {
     if self.start == 0 {
       return;
     }
-    self.rest.advance(self.start);
+    let _ = self.rest.split_to(self.start);
     self.start = 0;
   }
 }
