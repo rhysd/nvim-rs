@@ -5,7 +5,7 @@ use std::{
   io::{self, ErrorKind, Read, Write},
 };
 
-use bytes::{Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use rmp::{
   Marker,
   decode::ValueReadError,
@@ -145,7 +145,7 @@ impl DecodeState {
     if self.start == 0 {
       return;
     }
-    let _ = self.rest.split_to(self.start);
+    self.rest.advance(self.start);
     self.start = 0;
   }
 }
