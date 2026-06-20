@@ -1,6 +1,6 @@
 use navy_nvim_rs::rpc::handler::Dummy as DummyHandler;
 
-use navy_nvim_rs::create::tokio as create;
+use navy_nvim_rs::create;
 use tokio::process::Command;
 use tokio::test as atest;
 

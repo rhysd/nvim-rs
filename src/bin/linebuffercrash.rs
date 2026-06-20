@@ -1,6 +1,4 @@
-use navy_nvim_rs::{
-  create::tokio as create, rpc::handler::Dummy as DummyHandler,
-};
+use navy_nvim_rs::{create, rpc::handler::Dummy as DummyHandler};
 
 #[tokio::main]
 async fn main() {

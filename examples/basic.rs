@@ -6,7 +6,7 @@ use rmpv::Value;
 
 use tokio::fs::File as TokioFile;
 
-use navy_nvim_rs::{Handler, Neovim, create::tokio as create, rpc::IntoVal};
+use navy_nvim_rs::{Handler, Neovim, create, rpc::IntoVal};
 
 #[derive(Clone)]
 struct NeovimHandler {}

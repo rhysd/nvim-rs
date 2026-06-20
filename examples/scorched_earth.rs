@@ -6,7 +6,7 @@ use rmpv::Value;
 use tokio::fs::File as TokioFile;
 use tokio::sync::Mutex;
 
-use navy_nvim_rs::{Handler, Neovim, create::tokio as create};
+use navy_nvim_rs::{Handler, Neovim, create};
 
 struct Posis {
   cursor_start: Option<(u64, u64)>,

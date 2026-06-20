@@ -1,7 +1,13 @@
-//! Functions to spawn a [`neovim`](crate::neovim::Neovim) session using
-//! [`tokio`](tokio)
+//! Functions to spawn a [`neovim`](crate::neovim::Neovim) session.
+//!
+//! This implements various possibilities to connect to neovim, including
+//! spawning an own child process. Available capabilities might depend on your
+//! OS.
+//!
+//! API functions should be run from inside the tokio runtime.
+use core::future::Future;
 use std::{
-  future::Future,
+  fs::File,
   io::{self, Error},
   path::Path,
   process::Stdio,
@@ -22,11 +28,26 @@ type Connection = tokio::net::UnixStream;
 type Connection = tokio::net::windows::named_pipe::NamedPipeClient;
 
 use crate::{
-  Handler,
-  create::{Spawner, unbuffered_stdout},
   error::{HandshakeError, LoopError},
   neovim::Neovim,
+  rpc::handler::Handler,
 };
+
+/// A task to generalize spawning a future that returns `()`.
+///
+/// This is automatically implemented on your
+/// [`Handler`](crate::rpc::handler::Handler) using the appropriate runtime.
+///
+/// If you have a runtime that brings appropriate types, you can implement this
+/// on your [`Handler`](crate::rpc::handler::Handler) and use
+/// [`Neovim::new`](crate::neovim::Neovim::new) to connect to neovim.
+pub trait Spawner: Handler {
+  type Handle;
+
+  fn spawn<Fut>(&self, future: Fut) -> Self::Handle
+  where
+    Fut: Future<Output = ()> + Send + 'static;
+}
 
 impl<H> Spawner for H
 where
@@ -40,6 +61,23 @@ where
   {
     spawn(future)
   }
+}
+
+/// Create a std::io::File for stdout, which is not line-buffered, as
+/// opposed to std::io::Stdout.
+#[cfg(unix)]
+fn unbuffered_stdout() -> io::Result<File> {
+  use std::{io::stdout, os::fd::AsFd};
+
+  let owned_sout_fd = stdout().as_fd().try_clone_to_owned()?;
+  Ok(File::from(owned_sout_fd))
+}
+#[cfg(windows)]
+fn unbuffered_stdout() -> io::Result<File> {
+  use std::{io::stdout, os::windows::io::AsHandle};
+
+  let owned_sout_handle = stdout().as_handle().try_clone_to_owned()?;
+  Ok(File::from(owned_sout_handle))
 }
 
 /// Connect to a neovim instance via tcp

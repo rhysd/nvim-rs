@@ -9,7 +9,7 @@ use tokio::{
   task::yield_now,
 };
 
-use navy_nvim_rs::{self, Value, create::tokio as create, neovim::Neovim};
+use navy_nvim_rs::{self, Value, create, neovim::Neovim};
 
 mod common;
 use common::*;

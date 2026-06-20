@@ -1,4 +1,4 @@
-use navy_nvim_rs::{Handler, create::tokio as create, neovim::Neovim};
+use navy_nvim_rs::{Handler, create, neovim::Neovim};
 
 use rmpv::Value;
 
