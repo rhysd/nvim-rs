@@ -27,6 +27,12 @@ type Connection = tokio::net::UnixStream;
 #[cfg(windows)]
 type Connection = tokio::net::windows::named_pipe::NamedPipeClient;
 
+type SpawnedChild = (
+  Neovim<ChildStdin>,
+  JoinHandle<Result<(), Box<LoopError>>>,
+  Child,
+);
+
 use crate::{
   error::{HandshakeError, LoopError},
   neovim::Neovim,
@@ -151,13 +157,7 @@ where
 }
 
 /// Connect to a neovim instance by spawning a new one
-pub async fn new_child<H>(
-  handler: H,
-) -> io::Result<(
-  Neovim<ChildStdin>,
-  JoinHandle<Result<(), Box<LoopError>>>,
-  Child,
-)>
+pub async fn new_child<H>(handler: H) -> io::Result<SpawnedChild>
 where
   H: Handler<Writer = ChildStdin> + Send + 'static,
 {
@@ -172,11 +172,7 @@ where
 pub async fn new_child_path<H, S: AsRef<Path>>(
   program: S,
   handler: H,
-) -> io::Result<(
-  Neovim<ChildStdin>,
-  JoinHandle<Result<(), Box<LoopError>>>,
-  Child,
-)>
+) -> io::Result<SpawnedChild>
 where
   H: Handler<Writer = ChildStdin> + Send + 'static,
 {
@@ -191,11 +187,7 @@ where
 pub fn new_child_cmd<H>(
   mut cmd: Command,
   handler: H,
-) -> io::Result<(
-  Neovim<ChildStdin>,
-  JoinHandle<Result<(), Box<LoopError>>>,
-  Child,
-)>
+) -> io::Result<SpawnedChild>
 where
   H: Handler<Writer = ChildStdin> + Send + 'static,
 {
@@ -248,14 +240,7 @@ pub async fn new_child_handshake_cmd<H>(
   cmd: &mut Command,
   handler: H,
   message: &str,
-) -> Result<
-  (
-    Neovim<ChildStdin>,
-    JoinHandle<Result<(), Box<LoopError>>>,
-    Child,
-  ),
-  Box<HandshakeError>,
->
+) -> Result<SpawnedChild, Box<HandshakeError>>
 where
   H: Handler<Writer = ChildStdin> + Send + 'static,
 {

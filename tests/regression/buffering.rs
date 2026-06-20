@@ -27,7 +27,7 @@ fn linebuffer_crash() {
   );
 
   let status = Command::new(nvim_path())
-    .args(&["-u", "NONE", "--headless", "-c", &c1])
+    .args(["-u", "NONE", "--headless", "-c", &c1])
     .status()
     .unwrap();
 

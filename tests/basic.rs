@@ -34,7 +34,7 @@ fn basic() {
   let c4 = r#"wqa!"#;
 
   let status = Command::new(nvim_path())
-    .args(&[
+    .args([
       "-u",
       "NONE",
       "--headless",

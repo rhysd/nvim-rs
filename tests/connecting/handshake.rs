@@ -4,9 +4,7 @@ use navy_nvim_rs::create;
 use tokio::process::Command;
 use tokio::test as atest;
 
-#[path = "../common/mod.rs"]
-mod common;
-use common::*;
+use super::common::*;
 
 #[cfg(unix)]
 use navy_nvim_rs::error::HandshakeError;
@@ -16,7 +14,7 @@ async fn successful_handshake() {
   let handler = DummyHandler::new();
 
   create::new_child_handshake_cmd(
-    Command::new(nvim_path()).args(&["-u", "NONE", "--embed"]),
+    Command::new(nvim_path()).args(["-u", "NONE", "--embed"]),
     handler,
     "handshake_message",
   )

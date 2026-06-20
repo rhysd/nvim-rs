@@ -339,7 +339,7 @@ fn bench_encode(c: &mut Criterion) {
     b.to_async(&runtime).iter_batched(
       || request_msg.clone(),
       |msg| async move {
-        black_box(encode_to_state(state, msg).await.unwrap())
+        encode_to_state(state, msg).await.unwrap();
       },
       BatchSize::SmallInput,
     );

@@ -37,7 +37,7 @@ async fn main() {
   let _ = envargs.next();
   let testfile = envargs.next().unwrap();
 
-  fs::write(testfile, &format!("{:?}", curbuf.into_val())).unwrap();
+  fs::write(testfile, format!("{:?}", curbuf.into_val())).unwrap();
 
   // Any error should probably be logged, as stderr is not visible to users.
   match io_handler.await {

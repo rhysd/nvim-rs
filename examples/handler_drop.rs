@@ -28,25 +28,22 @@ impl Handler for NeovimHandler {
     args: Vec<Value>,
     req: Neovim<ChildStdin>,
   ) {
-    match name.as_ref() {
-      "nvim_buf_lines_event" => {
-        // This can be made more efficient by taking ownership appropriately,
-        // but we skip this in this example
-        for s in args[4]
-          .as_array()
-          .unwrap()
-          .iter()
-          .map(|s| s.as_str().unwrap())
-        {
-          self.buf.lock().unwrap().push(s.to_owned());
-        }
-        // shut down after the first event
-        let chan = req.get_api_info().await.unwrap()[0].as_i64().unwrap();
-        let close = format!("call chanclose({})", chan);
-        // this will always return an EOF error, so let's just ignore that here
-        let _ = req.command(&close).await;
+    if name.as_str() == "nvim_buf_lines_event" {
+      // This can be made more efficient by taking ownership appropriately,
+      // but we skip this in this example
+      for s in args[4]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+      {
+        self.buf.lock().unwrap().push(s.to_owned());
       }
-      _ => {}
+      // shut down after the first event
+      let chan = req.get_api_info().await.unwrap()[0].as_i64().unwrap();
+      let close = format!("call chanclose({})", chan);
+      // this will always return an EOF error, so let's just ignore that here
+      let _ = req.command(&close).await;
     }
   }
 }

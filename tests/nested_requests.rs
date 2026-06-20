@@ -91,11 +91,8 @@ impl Handler for NeovimHandler {
     args: Vec<Value>,
     _neovim: Neovim<ChildStdin>,
   ) {
-    match name.as_ref() {
-      "set_froodle" => {
-        *self.froodle.lock().await = args[0].as_str().unwrap().to_string()
-      }
-      _ => {}
+    if name.as_str() == "set_froodle" {
+      *self.froodle.lock().await = args[0].as_str().unwrap().to_string()
     };
   }
 }
@@ -136,10 +133,10 @@ async fn nested_requests() {
 
   // The 2nd timer closes the channel, which will be returned as an error from
   // the io handler. We only fail the test if we got another error
-  if let Err(err) = io_handler.await.unwrap() {
-    if !err.is_channel_closed() {
-      panic!("{}", err);
-    }
+  if let Err(err) = io_handler.await.unwrap()
+    && !err.is_channel_closed()
+  {
+    panic!("{}", err);
   }
 
   assert_eq!(

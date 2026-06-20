@@ -14,9 +14,7 @@ use std::{
 #[cfg(unix)]
 use tempfile::{Builder, TempDir};
 
-#[path = "../common/mod.rs"]
-mod common;
-use common::*;
+use super::common::*;
 
 const HOST: &str = "127.0.0.1";
 const PORT: u16 = 6666;
@@ -26,7 +24,7 @@ async fn can_connect_via_tcp() {
   let listen = HOST.to_string() + ":" + &PORT.to_string();
 
   let mut child = Command::new(nvim_path())
-    .args(&["-u", "NONE", "--headless", "--listen", &listen])
+    .args(["-u", "NONE", "--headless", "--listen", &listen])
     .spawn()
     .expect("Cannot start neovim");
 
@@ -52,6 +50,7 @@ async fn can_connect_via_tcp() {
     .expect("Error retrieving servername from neovim");
 
   child.kill().expect("Could not kill neovim");
+  child.wait().expect("Could not wait for neovim");
 
   assert_eq!(&listen, servername.as_str().unwrap());
 }
@@ -78,7 +77,7 @@ async fn can_connect_via_path() {
   let (socket_path, _guard) = get_socket_path();
 
   let mut child = Command::new(nvim_path())
-    .args(&["-u", "NONE", "--headless"])
+    .args(["-u", "NONE", "--headless"])
     .env("NVIM_LISTEN_ADDRESS", &socket_path)
     .spawn()
     .expect("Cannot start neovim");
@@ -90,7 +89,7 @@ async fn can_connect_via_path() {
     loop {
       sleep(Duration::from_millis(100));
 
-      if let Ok(_) = std::fs::metadata(&socket_path) {
+      if std::fs::metadata(&socket_path).is_ok() {
         break;
       }
 
@@ -104,10 +103,12 @@ async fn can_connect_via_path() {
 
   let (nvim, _io_handle) = create::new_path(&socket_path, handler)
     .await
-    .expect(&format!(
-      "Unable to connect to neovim's unix socket at {:?}",
-      &socket_path
-    ));
+    .unwrap_or_else(|_| {
+      panic!(
+        "Unable to connect to neovim's unix socket at {:?}",
+        &socket_path
+      )
+    });
 
   let servername = nvim
     .get_vvar("servername")
@@ -118,6 +119,7 @@ async fn can_connect_via_path() {
     .to_string();
 
   child.kill().expect("Could not kill neovim");
+  child.wait().expect("Could not wait for neovim");
 
   assert_eq!(socket_path, Path::new(&servername));
 }
