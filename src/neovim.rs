@@ -489,7 +489,7 @@ where
           result,
           error,
         }) => {
-          let sender = find_sender(&self.inner.queue, msgid).await?;
+          let sender = find_sender(&self.inner.queue, msgid)?;
           if error == Value::Nil {
             sender
               .send(Ok(Ok(result)))
@@ -590,15 +590,14 @@ async fn receive_response(
  * is that Vec is faster on small queue sizes
  * in most cases Vec.len = 1 so we just take first item in iteration.
  */
-async fn find_sender(
+#[inline]
+fn find_sender(
   queue: &Queue,
   msgid: u64,
 ) -> Result<oneshot::Sender<ResponseResult>, Box<LoopError>> {
   let mut queue = queue.lock();
-
-  let pos = match queue.iter().position(|req| req.0 == msgid) {
-    Some(p) => p,
-    None => return Err(msgid.into()),
+  let Some(pos) = queue.iter().position(|req| req.0 == msgid) else {
+    return Err(msgid.into());
   };
   let sender = queue.remove(pos).1;
   Ok(sender)
@@ -740,15 +739,14 @@ mod tests {
       queue.lock().push((3, sender));
     }
 
-    find_sender(&queue, 1).await.unwrap();
+    find_sender(&queue, 1).unwrap();
     assert_eq!(2, queue.lock().len());
-    find_sender(&queue, 2).await.unwrap();
+    find_sender(&queue, 2).unwrap();
     assert_eq!(1, queue.lock().len());
-    find_sender(&queue, 3).await.unwrap();
+    find_sender(&queue, 3).unwrap();
     assert!(queue.lock().is_empty());
 
-    if let LoopError::MsgidNotFound(17) =
-      *find_sender(&queue, 17).await.unwrap_err()
+    if let LoopError::MsgidNotFound(17) = *find_sender(&queue, 17).unwrap_err()
     {
     } else {
       panic!()
