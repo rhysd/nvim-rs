@@ -52,8 +52,9 @@ fastrand = "2.1.1"
 criterion = "0.8.2"
 
 [profile.bench]
-lto = true
 debug = true
+lto = "thin"
+codegen-units = 1
 
 [[bench]]
 name = "rpc_tokio"
