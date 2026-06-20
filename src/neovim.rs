@@ -7,6 +7,7 @@ use std::{
   },
 };
 
+use parking_lot::Mutex as SyncMutex;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::sync::{
   Mutex,
@@ -43,7 +44,7 @@ macro_rules! call_args {
 
 type ResponseResult = Result<Result<Value, Value>, Arc<DecodeError>>;
 
-type Queue = Mutex<Vec<(u64, oneshot::Sender<ResponseResult>)>>;
+type Queue = SyncMutex<Vec<(u64, oneshot::Sender<ResponseResult>)>>;
 
 enum HandlerMessage {
   RpcMessage(RpcMessage),
@@ -122,7 +123,7 @@ where
     let req = Neovim {
       inner: Arc::new(NeovimInner {
         writer: Mutex::new(model::EncodeState::new(writer)),
-        queue: Mutex::new(Vec::new()),
+        queue: SyncMutex::new(Vec::new()),
         msgid_counter: AtomicU64::new(0),
       }),
     };
@@ -168,7 +169,7 @@ where
     let instance = Neovim {
       inner: Arc::new(NeovimInner {
         writer: Mutex::new(model::EncodeState::new(writer)),
-        queue: Mutex::new(Vec::new()),
+        queue: SyncMutex::new(Vec::new()),
         msgid_counter: AtomicU64::new(0),
       }),
     };
@@ -259,7 +260,7 @@ where
 
     let (sender, receiver) = oneshot::channel();
 
-    self.inner.queue.lock().await.push((msgid, sender));
+    self.inner.queue.lock().push((msgid, sender));
 
     model::encode_to_state(&self.inner.writer, req).await?;
 
@@ -274,7 +275,7 @@ where
     let msgid = self.inner.msgid_counter.fetch_add(1, Ordering::Relaxed);
     let (sender, receiver) = oneshot::channel();
 
-    self.inner.queue.lock().await.push((msgid, sender));
+    self.inner.queue.lock().push((msgid, sender));
 
     model::encode_single_string_arg_msg_to_state(
       &self.inner.writer,
@@ -295,7 +296,7 @@ where
     let msgid = self.inner.msgid_counter.fetch_add(1, Ordering::Relaxed);
     let (sender, receiver) = oneshot::channel();
 
-    self.inner.queue.lock().await.push((msgid, sender));
+    self.inner.queue.lock().push((msgid, sender));
 
     model::encode_value_ref_to_state(
       &self.inner.writer,
@@ -386,7 +387,7 @@ where
     let err = Arc::new(err);
     let mut v: Vec<u64> = vec![];
 
-    let mut queue = queue.lock().await;
+    let mut queue = queue.lock();
     queue.drain(0..).for_each(|sender| {
       let msgid = sender.0;
       sender
@@ -593,7 +594,7 @@ async fn find_sender(
   queue: &Queue,
   msgid: u64,
 ) -> Result<oneshot::Sender<ResponseResult>, Box<LoopError>> {
-  let mut queue = queue.lock().await;
+  let mut queue = queue.lock();
 
   let pos = match queue.iter().position(|req| req.0 == msgid) {
     Some(p) => p,
@@ -656,7 +657,7 @@ mod tests {
     Neovim {
       inner: Arc::new(NeovimInner {
         writer: Mutex::new(model::EncodeState::new(Vec::new())),
-        queue: Mutex::new(Vec::new()),
+        queue: SyncMutex::new(Vec::new()),
         msgid_counter: AtomicU64::new(0),
       }),
     }
@@ -709,7 +710,7 @@ mod tests {
       .await
       .unwrap();
 
-    assert!(nvim.inner.queue.lock().await.is_empty());
+    assert!(nvim.inner.queue.lock().is_empty());
 
     let writer = nvim.inner.writer.lock().await;
     assert_eq!(
@@ -724,27 +725,27 @@ mod tests {
 
   #[tokio::test]
   async fn test_find_sender() {
-    let queue = Mutex::new(Vec::new());
+    let queue = SyncMutex::new(Vec::new());
 
     {
       let (sender, _receiver) = oneshot::channel();
-      queue.lock().await.push((1, sender));
+      queue.lock().push((1, sender));
     }
     {
       let (sender, _receiver) = oneshot::channel();
-      queue.lock().await.push((2, sender));
+      queue.lock().push((2, sender));
     }
     {
       let (sender, _receiver) = oneshot::channel();
-      queue.lock().await.push((3, sender));
+      queue.lock().push((3, sender));
     }
 
     find_sender(&queue, 1).await.unwrap();
-    assert_eq!(2, queue.lock().await.len());
+    assert_eq!(2, queue.lock().len());
     find_sender(&queue, 2).await.unwrap();
-    assert_eq!(1, queue.lock().await.len());
+    assert_eq!(1, queue.lock().len());
     find_sender(&queue, 3).await.unwrap();
-    assert!(queue.lock().await.is_empty());
+    assert!(queue.lock().is_empty());
 
     if let LoopError::MsgidNotFound(17) =
       *find_sender(&queue, 17).await.unwrap_err()
