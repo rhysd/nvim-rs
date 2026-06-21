@@ -36,10 +36,10 @@ pub mod uioptions;
 pub mod create;
 
 pub use crate::{
-  exttypes::{Buffer, Tabpage, Window},
-  neovim::Neovim,
-  rpc::handler::Handler,
-  uioptions::{UiAttachOptions, UiOption},
+    exttypes::{Buffer, Tabpage, Window},
+    neovim::Neovim,
+    rpc::handler::Handler,
+    uioptions::{UiAttachOptions, UiOption},
 };
 
 pub use rmpv::Value;

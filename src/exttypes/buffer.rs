@@ -7,10 +7,10 @@ use crate::{Neovim, impl_exttype_traits, rpc::model::IntoVal};
 /// always use this instance.
 pub struct Buffer<W>
 where
-  W: AsyncWrite + Send + Unpin + 'static,
+    W: AsyncWrite + Send + Unpin + 'static,
 {
-  pub(crate) code_data: Value,
-  pub(crate) neovim: Neovim<W>,
+    pub(crate) code_data: Value,
+    pub(crate) neovim: Neovim<W>,
 }
 
 impl_exttype_traits!(Buffer);

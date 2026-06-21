@@ -8,50 +8,47 @@ use rmpv::Value;
 use tokio::io::AsyncWrite;
 
 use crate::{
-  Neovim,
-  rpc::redraw::{RedrawDecodeResult, RedrawNotification},
+    Neovim,
+    rpc::redraw::{RedrawDecodeResult, RedrawNotification},
 };
 
 /// The central functionality of a plugin. The trait bounds asure that each
 /// asynchronous task can receive a copy of the handler, so some state can be
 /// shared.
 pub trait Handler: Send + Sync + Clone + 'static {
-  /// The type where we write our responses to requests. Handling of incoming
-  /// requests/notifications is done on the io loop, which passes the parsed
-  /// messages to the handler.
-  type Writer: AsyncWrite + Send + Unpin + 'static;
+    /// The type where we write our responses to requests. Handling of incoming
+    /// requests/notifications is done on the io loop, which passes the parsed
+    /// messages to the handler.
+    type Writer: AsyncWrite + Send + Unpin + 'static;
 
-  /// Handling a `redraw` notification on the handler loop without allocating
-  /// an owned `String` or `Vec<Value>` for the notification payload.
-  fn handle_redraw(
-    &self,
-    _redraw: RedrawNotification<'_>,
-  ) -> RedrawDecodeResult<()> {
-    Ok(())
-  }
+    /// Handling a `redraw` notification on the handler loop without allocating
+    /// an owned `String` or `Vec<Value>` for the notification payload.
+    fn handle_redraw(&self, _redraw: RedrawNotification<'_>) -> RedrawDecodeResult<()> {
+        Ok(())
+    }
 
-  /// Handling an rpc request. The ID's of requests are handled by the
-  /// [`neovim`](crate::neovim::Neovim) instance.
-  fn handle_request(
-    &self,
-    _name: String,
-    _args: Vec<Value>,
-    _neovim: Neovim<Self::Writer>,
-  ) -> impl Future<Output = Result<Value, Value>> + Send {
-    async { Err(Value::from("Not implemented")) }
-  }
+    /// Handling an rpc request. The ID's of requests are handled by the
+    /// [`neovim`](crate::neovim::Neovim) instance.
+    fn handle_request(
+        &self,
+        _name: String,
+        _args: Vec<Value>,
+        _neovim: Neovim<Self::Writer>,
+    ) -> impl Future<Output = Result<Value, Value>> + Send {
+        async { Err(Value::from("Not implemented")) }
+    }
 
-  /// Handling an rpc notification. Notifications are handled one at a time in
-  /// the order in which they were received, and will block new requests from
-  /// being received until handle_notify returns.
-  fn handle_notify(
-    &self,
-    _name: String,
-    _args: Vec<Value>,
-    _neovim: Neovim<<Self as Handler>::Writer>,
-  ) -> impl Future<Output = ()> + Send {
-    async {}
-  }
+    /// Handling an rpc notification. Notifications are handled one at a time in
+    /// the order in which they were received, and will block new requests from
+    /// being received until handle_notify returns.
+    fn handle_notify(
+        &self,
+        _name: String,
+        _args: Vec<Value>,
+        _neovim: Neovim<<Self as Handler>::Writer>,
+    ) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 }
 
 /// The dummy handler defaults to doing nothing with a notification, and
@@ -61,35 +58,35 @@ pub trait Handler: Send + Sync + Clone + 'static {
 #[derive(Default)]
 pub struct Dummy<Q>
 where
-  Q: AsyncWrite + Send + Sync + Unpin + 'static,
+    Q: AsyncWrite + Send + Sync + Unpin + 'static,
 {
-  q: Arc<PhantomData<Q>>,
+    q: Arc<PhantomData<Q>>,
 }
 
 impl<Q> Clone for Dummy<Q>
 where
-  Q: AsyncWrite + Send + Sync + Unpin + 'static,
+    Q: AsyncWrite + Send + Sync + Unpin + 'static,
 {
-  fn clone(&self) -> Self {
-    Dummy { q: self.q.clone() }
-  }
+    fn clone(&self) -> Self {
+        Dummy { q: self.q.clone() }
+    }
 }
 
 impl<Q> Handler for Dummy<Q>
 where
-  Q: AsyncWrite + Send + Sync + Unpin + 'static,
+    Q: AsyncWrite + Send + Sync + Unpin + 'static,
 {
-  type Writer = Q;
+    type Writer = Q;
 }
 
 impl<Q> Dummy<Q>
 where
-  Q: AsyncWrite + Send + Sync + Unpin + 'static,
+    Q: AsyncWrite + Send + Sync + Unpin + 'static,
 {
-  #[must_use]
-  pub fn new() -> Dummy<Q> {
-    Dummy {
-      q: Arc::new(PhantomData),
+    #[must_use]
+    pub fn new() -> Dummy<Q> {
+        Dummy {
+            q: Arc::new(PhantomData),
+        }
     }
-  }
 }
