@@ -16,69 +16,41 @@ env:
 
 jobs:
   all:
-    runs-on: ${{ matrix.os }}
-
     strategy:
-      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
-        rust: [stable]
-        include:
-          - os: ubuntu-latest
-            rust: beta
-          - os: ubuntu-latest
-            rust: nightly
+
+    runs-on: ${{ matrix.os }}
 
     steps:
-    - uses: actions/checkout@v6
-
-    - name: Install Rust ${{ matrix.rust }}
-      run: |
-        rustup set profile minimal
-        rustup toolchain install ${{ matrix.rust }}
-        rustup override set ${{ matrix.rust }}
-        rustc -V
-        cargo -V
-        rustup -V
-
-    - uses: Swatinem/rust-cache@v2
-
-    - name: Check
-      run: |
-        cargo check && cargo check --examples --features use_tokio && cargo check --examples --features use_async-std
-
-    - name: Download neovim binary on linux
-      if: matrix.os == 'ubuntu-latest'
-      run: |
-        sudo apt install libfuse2
-        curl -L https://github.com/neovim/neovim/releases/download/nightly/nvim-linux-x86_64.appimage -o nvim.appimage
-        chmod a+x nvim.appimage
-        echo "NVIMRS_TEST_BIN=$PWD/nvim.appimage" >> $GITHUB_ENV
-
-    - name: Download neovim binary on macos
-      if: matrix.os == 'macos-latest'
-      run: |
-        curl -L https://github.com/neovim/neovim/releases/download/nightly/nvim-macos-x86_64.tar.gz -o nvim-macos.tar.gz
-        tar xfz nvim-macos.tar.gz
-        ls
-        echo "NVIMRS_TEST_BIN=$PWD/nvim-macos-x86_64/bin/nvim" >> $GITHUB_ENV
-
-    - name: Download neovim binary on windows
-      if: matrix.os == 'windows-latest'
-      run: |
-        curl -L https://github.com/neovim/neovim/releases/download/nightly/nvim-win64.zip -o nvim-win64.zip
-        7z x nvim-win64.zip
-        $exe = Get-ChildItem -Path nvim-win64 -Filter nvim.exe -Recurse | %{$_.FullName}
-        echo "NVIMRS_TEST_BIN=$exe" >> $env:GITHUB_ENV
-
-    - name: Build basic example
-      run: |
-        cargo build --example basic --features use_tokio
-
-    - name: Tests
-      run: |
-        cargo test -- --nocapture && cargo test --features use_tokio -- --nocapture && cargo test --features use_async-std -- --nocapture
-
-    - name: Benchtests
-      run: |
-            cargo bench --features use_tokio -- --test && cargo bench --features use_async-std -- --test
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets
+      - run: cargo fmt --check --all
+      - run: cargo clippy --all-targets
+      - run: cargo build --example basic
+      - name: Download neovim binary on linux
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt install libfuse2
+          curl -L https://github.com/neovim/neovim/releases/download/nightly/nvim-linux-x86_64.appimage -o nvim.appimage
+          chmod a+x nvim.appimage
+          echo "NVIMRS_TEST_BIN=$PWD/nvim.appimage" >> $GITHUB_ENV
+      - name: Download neovim binary on macos
+        if: matrix.os == 'macos-latest'
+        run: |
+          curl -L https://github.com/neovim/neovim/releases/download/nightly/nvim-macos-x86_64.tar.gz -o nvim-macos.tar.gz
+          tar xfz nvim-macos.tar.gz
+          ls
+          echo "NVIMRS_TEST_BIN=$PWD/nvim-macos-x86_64/bin/nvim" >> $GITHUB_ENV
+      - name: Download neovim binary on windows
+        if: matrix.os == 'windows-latest'
+        run: |
+          curl -L https://github.com/neovim/neovim/releases/download/nightly/nvim-win64.zip -o nvim-win64.zip
+          7z x nvim-win64.zip
+          $exe = Get-ChildItem -Path nvim-win64 -Filter nvim.exe -Recurse | %{$_.FullName}
+          echo "NVIMRS_TEST_BIN=$exe" >> $env:GITHUB_ENV
+      - run: cargo test -- --nocapture
