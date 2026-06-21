@@ -522,10 +522,11 @@ where
   W: AsyncWrite + Send + Unpin + 'static,
 {
   let mut state = state.lock().await;
-  state.buffer.clear();
-  encode_sync(&mut state.buffer, msg)?;
-
   let EncodeState { writer, buffer } = &mut *state;
+
+  buffer.clear();
+  encode_sync(buffer, msg)?;
+
   writer.write_all(buffer).await?;
   writer.flush().await?;
 
@@ -543,10 +544,10 @@ pub async fn encode_single_string_arg_msg_to_state<
   arg: &str,
 ) -> Result<(), Box<EncodeError>> {
   let mut state = state.lock().await;
-  state.buffer.clear();
-  write_single_string_arg_msg(&mut state.buffer, message_type, method, arg)?;
-
   let EncodeState { writer, buffer } = &mut *state;
+
+  buffer.clear();
+  write_single_string_arg_msg(buffer, message_type, method, arg)?;
   writer.write_all(buffer).await?;
   writer.flush().await?;
 
@@ -564,10 +565,10 @@ where
   W: AsyncWrite + Send + Unpin + 'static,
 {
   let mut state = state.lock().await;
-  state.buffer.clear();
-  write_message_value_ref(&mut state.buffer, message_type, method, args)?;
-
   let EncodeState { writer, buffer } = &mut *state;
+
+  buffer.clear();
+  write_message_value_ref(buffer, message_type, method, args)?;
   writer.write_all(buffer).await?;
   writer.flush().await?;
 

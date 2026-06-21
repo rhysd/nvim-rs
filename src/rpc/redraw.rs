@@ -347,6 +347,14 @@ impl<'de> ArrayReader<'de> {
   }
 
   #[inline]
+  pub fn read_u32(&mut self) -> RedrawDecodeResult<u32> {
+    self.ensure_remaining()?;
+    let value = self.reader.read_u32()?;
+    self.remaining -= 1;
+    Ok(value)
+  }
+
+  #[inline]
   pub fn read_u64(&mut self) -> RedrawDecodeResult<u64> {
     self.ensure_remaining()?;
     let value = self.reader.read_u64()?;
@@ -355,9 +363,9 @@ impl<'de> ArrayReader<'de> {
   }
 
   #[inline]
-  pub fn read_u64_or_nil(&mut self) -> RedrawDecodeResult<Option<u64>> {
+  pub fn read_u32_or_nil(&mut self) -> RedrawDecodeResult<Option<u32>> {
     self.ensure_remaining()?;
-    let value = self.reader.read_u64_or_nil()?;
+    let value = self.reader.read_u32_or_nil()?;
     self.remaining -= 1;
     Ok(value)
   }
@@ -575,6 +583,11 @@ impl<'de> MsgpackReader<'de> {
   }
 
   #[inline]
+  fn read_u32(&mut self) -> RedrawDecodeResult<u32> {
+    Ok(self.read_rmp(decode::read_int::<u32, _>)?)
+  }
+
+  #[inline]
   fn read_u64(&mut self) -> RedrawDecodeResult<u64> {
     Ok(self.read_rmp(decode::read_int::<u64, _>)?)
   }
@@ -585,13 +598,13 @@ impl<'de> MsgpackReader<'de> {
   }
 
   #[inline]
-  fn read_u64_or_nil(&mut self) -> RedrawDecodeResult<Option<u64>> {
+  fn read_u32_or_nil(&mut self) -> RedrawDecodeResult<Option<u32>> {
     let mut bytes = Bytes::new(self.remaining_slice());
     if decode::read_marker(&mut bytes)? == Marker::Null {
       self.skip_bytes(1)?;
       Ok(None)
     } else {
-      self.read_u64().map(Some)
+      self.read_u32().map(Some)
     }
   }
 
@@ -1290,6 +1303,51 @@ mod tests {
   }
 
   #[test]
+  fn array_reader_reads_u32_values() {
+    let mut bytes = vec![Marker::FixArray(4).to_u8()];
+    bytes.push(Marker::FixPos(24).to_u8());
+    bytes.push(Marker::U16.to_u8());
+    push_u16(&mut bytes, 256);
+    bytes.push(Marker::U32.to_u8());
+    push_u32(&mut bytes, 65_536);
+    bytes.push(Marker::I8.to_u8());
+    bytes.extend_from_slice(&2_i8.to_be_bytes());
+
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_eq!(array.read_u32().unwrap(), 24);
+    assert_eq!(array.read_u32().unwrap(), 256);
+    assert_eq!(array.read_u32().unwrap(), 65_536);
+    assert_eq!(array.read_u32().unwrap(), 2);
+    assert!(array.is_empty());
+    assert_incomplete(array.read_u32());
+  }
+
+  #[test]
+  fn array_reader_reports_u32_errors() {
+    let bytes = encode_value(Value::from(vec![Value::from("not-u32")]));
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_reader_error_kind(array.read_u32(), ErrorKind::InvalidData);
+
+    let bytes = encode_value(Value::from(vec![Value::from(-1)]));
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_reader_error_kind(array.read_u32(), ErrorKind::InvalidData);
+
+    let mut bytes = vec![Marker::FixArray(1).to_u8(), Marker::U64.to_u8()];
+    push_u64(&mut bytes, u64::from(u32::MAX) + 1);
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_reader_error_kind(array.read_u32(), ErrorKind::InvalidData);
+
+    let bytes = vec![Marker::FixArray(1).to_u8(), Marker::U16.to_u8()];
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_incomplete(array.read_u32());
+  }
+
+  #[test]
   fn array_reader_reads_usize_values() {
     let mut bytes = vec![Marker::FixArray(4).to_u8()];
     bytes.push(Marker::FixPos(24).to_u8());
@@ -1329,42 +1387,50 @@ mod tests {
   }
 
   #[test]
-  fn array_reader_reads_u64_or_nil_values() {
+  fn array_reader_reads_u32_or_nil_values() {
     let mut bytes = vec![Marker::FixArray(5).to_u8()];
     bytes.push(Marker::FixPos(24).to_u8());
     bytes.push(Marker::Null.to_u8());
     bytes.push(Marker::U16.to_u8());
     push_u16(&mut bytes, 256);
-    bytes.push(Marker::U64.to_u8());
-    push_u64(&mut bytes, 9_007_199_254_740_991);
+    bytes.push(Marker::U32.to_u8());
+    push_u32(&mut bytes, u32::MAX);
     bytes.push(Marker::I8.to_u8());
     bytes.extend_from_slice(&2_i8.to_be_bytes());
 
     let mut array = ArrayReader::new(&bytes).unwrap();
 
-    assert_eq!(array.read_u64_or_nil().unwrap(), Some(24));
-    assert_eq!(array.read_u64_or_nil().unwrap(), None);
-    assert_eq!(array.read_u64_or_nil().unwrap(), Some(256));
-    assert_eq!(
-      array.read_u64_or_nil().unwrap(),
-      Some(9_007_199_254_740_991)
-    );
-    assert_eq!(array.read_u64_or_nil().unwrap(), Some(2));
+    assert_eq!(array.read_u32_or_nil().unwrap(), Some(24));
+    assert_eq!(array.read_u32_or_nil().unwrap(), None);
+    assert_eq!(array.read_u32_or_nil().unwrap(), Some(256));
+    assert_eq!(array.read_u32_or_nil().unwrap(), Some(u32::MAX));
+    assert_eq!(array.read_u32_or_nil().unwrap(), Some(2));
     assert!(array.is_empty());
-    assert_incomplete(array.read_u64_or_nil());
+    assert_incomplete(array.read_u32_or_nil());
   }
 
   #[test]
-  fn array_reader_reports_u64_or_nil_errors() {
-    let bytes = encode_value(Value::from(vec![Value::from("not-u64")]));
+  fn array_reader_reports_u32_or_nil_errors() {
+    let bytes = encode_value(Value::from(vec![Value::from("not-u32")]));
     let mut array = ArrayReader::new(&bytes).unwrap();
 
-    assert_reader_error_kind(array.read_u64_or_nil(), ErrorKind::InvalidData);
+    assert_reader_error_kind(array.read_u32_or_nil(), ErrorKind::InvalidData);
 
     let bytes = encode_value(Value::from(vec![Value::from(-1)]));
     let mut array = ArrayReader::new(&bytes).unwrap();
 
-    assert_reader_error_kind(array.read_u64_or_nil(), ErrorKind::InvalidData);
+    assert_reader_error_kind(array.read_u32_or_nil(), ErrorKind::InvalidData);
+
+    let mut bytes = vec![Marker::FixArray(1).to_u8(), Marker::U64.to_u8()];
+    push_u64(&mut bytes, u64::from(u32::MAX) + 1);
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_reader_error_kind(array.read_u32_or_nil(), ErrorKind::InvalidData);
+
+    let bytes = vec![Marker::FixArray(1).to_u8(), Marker::U16.to_u8()];
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_incomplete(array.read_u32_or_nil());
   }
 
   #[test]
