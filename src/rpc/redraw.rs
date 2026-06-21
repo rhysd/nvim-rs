@@ -73,6 +73,7 @@ impl From<BytesReadError> for RedrawDecodeError {
 }
 
 impl From<decode::MarkerReadError<BytesReadError>> for RedrawDecodeError {
+  #[inline]
   fn from(err: decode::MarkerReadError<BytesReadError>) -> Self {
     err.0.into()
   }
@@ -290,7 +291,7 @@ impl<'de> RedrawNotification<'de> {
       self.params.remaining -= 1;
 
       let name = batch_items.read_str()?;
-      let args = batch_items.take_remaining();
+      let args = batch_items;
       let mut batch = RedrawBatch { name, args };
 
       let should_continue = f(&mut batch)?;
@@ -456,16 +457,6 @@ impl<'de> ArrayReader<'de> {
       self.skip_next()?;
     }
     Ok(())
-  }
-
-  #[inline]
-  fn take_remaining(&mut self) -> Self {
-    let remaining = self.remaining;
-    self.remaining = 0;
-    Self {
-      reader: self.reader.clone(),
-      remaining,
-    }
   }
 
   #[inline]
@@ -746,16 +737,16 @@ impl<'de> MsgpackReader<'de> {
         self.skip_bytes(len)
       }
       Marker::Array16 => {
-        let len = self.read_data_u16()?;
-        self.skip_values(u32::from(len))
+        let len = self.read_data_u16()? as u32;
+        self.skip_values(len)
       }
       Marker::Array32 => {
         let len = self.read_data_u32()?;
         self.skip_values(len)
       }
       Marker::Map16 => {
-        let len = self.read_data_u16()?;
-        self.skip_map_values(u32::from(len))
+        let len = self.read_data_u16()? as u32;
+        self.skip_map_values(len)
       }
       Marker::Map32 => {
         let len = self.read_data_u32()?;
