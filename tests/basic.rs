@@ -1,7 +1,7 @@
 mod common;
 use common::*;
 
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, process::Command};
 
 use tempfile::Builder;
 
@@ -18,12 +18,7 @@ fn basic() {
 
   let c1 = format!(
     "let jobid = jobstart([\"{}\", \"{}\"], {{\"rpc\": v:true}})",
-    viml_escape(
-      PathBuf::from(env!("EXAMPLES_PATH"))
-        .join("basic")
-        .to_str()
-        .unwrap()
-    ),
+    viml_escape("target/debug/examples/basic"),
     viml_escape(buf_path.to_str().unwrap())
   );
   let c2 = r#"sleep 100m | let pong = rpcrequest(jobid, "ping")"#;
