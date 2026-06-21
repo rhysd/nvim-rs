@@ -370,6 +370,14 @@ impl<'de> ArrayReader<'de> {
   }
 
   #[inline]
+  pub fn read_usize(&mut self) -> RedrawDecodeResult<usize> {
+    self.ensure_remaining()?;
+    let value = self.reader.read_usize()?;
+    self.remaining -= 1;
+    Ok(value)
+  }
+
+  #[inline]
   pub fn read_bool(&mut self) -> RedrawDecodeResult<bool> {
     self.ensure_remaining()?;
     let value = self.reader.read_bool()?;
@@ -578,6 +586,11 @@ impl<'de> MsgpackReader<'de> {
   #[inline]
   fn read_u64(&mut self) -> RedrawDecodeResult<u64> {
     Ok(self.read_rmp(decode::read_int::<u64, _>)?)
+  }
+
+  #[inline]
+  fn read_usize(&mut self) -> RedrawDecodeResult<usize> {
+    Ok(self.read_rmp(decode::read_int::<usize, _>)?)
   }
 
   #[inline]
@@ -1283,6 +1296,45 @@ mod tests {
     assert_eq!(array.read_u64().unwrap(), 24);
     assert_eq!(array.read_str().unwrap(), "text");
     assert!(array.is_empty());
+  }
+
+  #[test]
+  fn array_reader_reads_usize_values() {
+    let mut bytes = vec![Marker::FixArray(4).to_u8()];
+    bytes.push(Marker::FixPos(24).to_u8());
+    bytes.push(Marker::U16.to_u8());
+    push_u16(&mut bytes, 256);
+    bytes.push(Marker::U32.to_u8());
+    push_u32(&mut bytes, 65_536);
+    bytes.push(Marker::I8.to_u8());
+    bytes.extend_from_slice(&2_i8.to_be_bytes());
+
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_eq!(array.read_usize().unwrap(), 24);
+    assert_eq!(array.read_usize().unwrap(), 256);
+    assert_eq!(array.read_usize().unwrap(), 65_536);
+    assert_eq!(array.read_usize().unwrap(), 2);
+    assert!(array.is_empty());
+    assert_incomplete(array.read_usize());
+  }
+
+  #[test]
+  fn array_reader_reports_usize_errors() {
+    let bytes = encode_value(Value::from(vec![Value::from("not-usize")]));
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_reader_error_kind(array.read_usize(), ErrorKind::InvalidData);
+
+    let bytes = encode_value(Value::from(vec![Value::from(-1)]));
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_reader_error_kind(array.read_usize(), ErrorKind::InvalidData);
+
+    let bytes = vec![Marker::FixArray(1).to_u8(), Marker::U16.to_u8()];
+    let mut array = ArrayReader::new(&bytes).unwrap();
+
+    assert_incomplete(array.read_usize());
   }
 
   #[test]
