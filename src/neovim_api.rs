@@ -1,21 +1,19 @@
 //! The auto generated API for [`neovim`](crate::neovim::Neovim)
 //!
 //! Auto generated 2025-03-01 14:48:09.493596
-use tokio::io::AsyncWrite;
-
 use crate::{
     Buffer, Tabpage, Window,
     error::CallError,
     neovim::*,
-    rpc::{unpack::TryUnpack, *},
+    rpc::{handler::Handler, unpack::TryUnpack, *},
 };
 
-impl<W> Buffer<W>
+impl<H> Buffer<H>
 where
-    W: AsyncWrite + Send + Unpin + 'static,
+    H: Handler,
 {
     #[must_use]
-    pub fn new(code_data: Value, neovim: Neovim<W>) -> Buffer<W> {
+    pub fn new(code_data: Value, neovim: Neovim<H>) -> Buffer<H> {
         Buffer { code_data, neovim }
     }
 
@@ -523,12 +521,12 @@ where
     }
 }
 
-impl<W> Window<W>
+impl<H> Window<H>
 where
-    W: AsyncWrite + Send + Unpin + 'static,
+    H: Handler,
 {
     #[must_use]
-    pub fn new(code_data: Value, neovim: Neovim<W>) -> Window<W> {
+    pub fn new(code_data: Value, neovim: Neovim<H>) -> Window<H> {
         Window { code_data, neovim }
     }
 
@@ -580,7 +578,7 @@ where
             .map_err(|v| Box::new(CallError::WrongValueType(v)))
     }
     /// since: 5
-    pub async fn set_buf(&self, buffer: &Buffer<W>) -> Result<(), Box<CallError>> {
+    pub async fn set_buf(&self, buffer: &Buffer<H>) -> Result<(), Box<CallError>> {
         self.neovim
             .call(
                 "nvim_win_set_buf",
@@ -741,12 +739,12 @@ where
     }
 }
 
-impl<W> Tabpage<W>
+impl<H> Tabpage<H>
 where
-    W: AsyncWrite + Send + Unpin + 'static,
+    H: Handler,
 {
     #[must_use]
-    pub fn new(code_data: Value, neovim: Neovim<W>) -> Tabpage<W> {
+    pub fn new(code_data: Value, neovim: Neovim<H>) -> Tabpage<H> {
         Tabpage { code_data, neovim }
     }
 
@@ -790,7 +788,7 @@ where
             .map_err(|v| Box::new(CallError::WrongValueType(v)))
     }
     /// since: 12
-    pub async fn set_win(&self, win: &Window<W>) -> Result<(), Box<CallError>> {
+    pub async fn set_win(&self, win: &Window<H>) -> Result<(), Box<CallError>> {
         self.neovim
             .call(
                 "nvim_tabpage_set_win",
@@ -821,9 +819,9 @@ where
     }
 }
 
-impl<W> Neovim<W>
+impl<H> Neovim<H>
 where
-    W: AsyncWrite + Send + Unpin + 'static,
+    H: Handler,
 {
     pub async fn get_autocmds(
         &self,
@@ -1370,14 +1368,14 @@ where
             .map_err(|v| Box::new(CallError::WrongValueType(v)))
     }
 
-    pub async fn set_current_buf(&self, buffer: &Buffer<W>) -> Result<(), Box<CallError>> {
+    pub async fn set_current_buf(&self, buffer: &Buffer<H>) -> Result<(), Box<CallError>> {
         self.call("nvim_set_current_buf", call_args![buffer])
             .await??
             .try_unpack()
             .map_err(|v| Box::new(CallError::WrongValueType(v)))
     }
 
-    pub async fn set_current_win(&self, window: &Window<W>) -> Result<(), Box<CallError>> {
+    pub async fn set_current_win(&self, window: &Window<H>) -> Result<(), Box<CallError>> {
         self.call("nvim_set_current_win", call_args![window])
             .await??
             .try_unpack()
@@ -1386,7 +1384,7 @@ where
 
     pub async fn open_term(
         &self,
-        buffer: &Buffer<W>,
+        buffer: &Buffer<H>,
         opts: Vec<(Value, Value)>,
     ) -> Result<i64, Box<CallError>> {
         self.call("nvim_open_term", call_args![buffer, opts])
@@ -1402,7 +1400,7 @@ where
             .map_err(|v| Box::new(CallError::WrongValueType(v)))
     }
 
-    pub async fn set_current_tabpage(&self, tabpage: &Tabpage<W>) -> Result<(), Box<CallError>> {
+    pub async fn set_current_tabpage(&self, tabpage: &Tabpage<H>) -> Result<(), Box<CallError>> {
         self.call("nvim_set_current_tabpage", call_args![tabpage])
             .await??
             .try_unpack()

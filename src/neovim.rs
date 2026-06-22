@@ -72,16 +72,13 @@ where
     msgid_counter: AtomicU64,
 }
 
-pub struct Neovim<W>
-where
-    W: AsyncWrite + Send + Unpin + 'static,
-{
-    pub(crate) inner: Arc<NeovimInner<W>>,
+pub struct Neovim<H: Handler> {
+    pub(crate) inner: Arc<NeovimInner<H::Writer>>,
 }
 
-impl<W> Clone for Neovim<W>
+impl<H> Clone for Neovim<H>
 where
-    W: AsyncWrite + Send + Unpin + 'static,
+    H: Handler,
 {
     fn clone(&self) -> Self {
         Neovim {
@@ -90,32 +87,28 @@ where
     }
 }
 
-impl<W> PartialEq for Neovim<W>
+impl<H> PartialEq for Neovim<H>
 where
-    W: AsyncWrite + Send + Unpin + 'static,
+    H: Handler,
 {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
-impl<W> Eq for Neovim<W> where W: AsyncWrite + Send + Unpin + 'static {}
+impl<H> Eq for Neovim<H> where H: Handler {}
 
-impl<W> Neovim<W>
+impl<H> Neovim<H>
 where
-    W: AsyncWrite + Send + Unpin + 'static,
+    H: Handler,
 {
     #[allow(clippy::new_ret_no_self)]
-    pub fn new<H, R>(
+    pub fn new<R>(
         reader: R,
-        writer: W,
+        writer: H::Writer,
         handler: H,
-    ) -> (
-        Neovim<<H as Handler>::Writer>,
-        impl Future<Output = Result<(), Box<LoopError>>>,
-    )
+    ) -> (Self, impl Future<Output = Result<(), Box<LoopError>>>)
     where
         R: AsyncRead + Send + Unpin + 'static,
-        H: Handler<Writer = W>,
     {
         let req = Neovim {
             inner: Arc::new(NeovimInner {
@@ -130,7 +123,7 @@ where
         let handler_req = req.clone();
         let fut = async move {
             tokio::try_join!(
-                io_req.io_loop::<H, R>(reader, sender),
+                io_req.io_loop(reader, sender),
                 handler_req.handler_loop(handler, receiver),
             )
             .map(|_| ())
@@ -147,21 +140,20 @@ where
     /// stdout. Due to the way Neovim packs strings, the length has to be either
     /// less than 20 characters or more than 31 characters long.
     /// See https://github.com/neovim/neovim/issues/32784 for more information.
-    pub async fn handshake<H, R>(
+    pub async fn handshake<R>(
         mut reader: R,
-        writer: W,
+        writer: H::Writer,
         handler: H,
         message: &str,
     ) -> Result<
         (
-            Neovim<<H as Handler>::Writer>,
-            impl Future<Output = Result<(), Box<LoopError>>> + use<H, R, W>,
+            Self,
+            impl Future<Output = Result<(), Box<LoopError>>> + use<H, R>,
         ),
         Box<HandshakeError>,
     >
     where
         R: AsyncRead + Send + Unpin + 'static,
-        H: Handler<Writer = W>,
     {
         let instance = Neovim {
             inner: Arc::new(NeovimInner {
@@ -232,7 +224,7 @@ where
         let handler_instance = instance.clone();
         let fut = async move {
             tokio::try_join!(
-                io_instance.io_loop::<H, R>(reader, sender),
+                io_instance.io_loop(reader, sender),
                 handler_instance.handler_loop(handler, receiver),
             )
             .map(|_| ())
@@ -399,14 +391,11 @@ where
         }
     }
 
-    async fn handler_loop<H>(
+    async fn handler_loop(
         self,
         handler: H,
         mut receiver: UnboundedReceiver<RedrawFrame>,
-    ) -> Result<(), Box<LoopError>>
-    where
-        H: Handler<Writer = W>,
-    {
+    ) -> Result<(), Box<LoopError>> {
         loop {
             let Some(msg) = receiver.recv().await else {
                 /* If our receiver closes, that just means that io_handler started
@@ -421,19 +410,18 @@ where
         }
     }
 
-    async fn io_loop<H, R>(
+    async fn io_loop<R>(
         self,
         mut reader: R,
         sender: UnboundedSender<RedrawFrame>,
     ) -> Result<(), Box<LoopError>>
     where
-        H: Handler,
         R: AsyncRead + Send + Unpin + 'static,
     {
         let mut decoder = model::DecodeState::new();
 
         loop {
-            let msg = match Self::decode_next::<H, R>(&mut decoder, &mut reader).await {
+            let msg = match Self::decode_next(&mut decoder, &mut reader).await {
                 Ok(msg) => msg,
                 Err(err) => {
                     let err = self.send_error_to_callers(&self.inner.queue, err).await?;
@@ -465,12 +453,11 @@ where
         }
     }
 
-    async fn decode_next<H, R>(
+    async fn decode_next<R>(
         decoder: &mut model::DecodeState,
         reader: &mut R,
     ) -> Result<HandlerMessage, DecodeError>
     where
-        H: Handler,
         R: AsyncRead + Send + Unpin + 'static,
     {
         loop {
@@ -647,7 +634,7 @@ mod tests {
         ]))
     }
 
-    fn test_neovim() -> Neovim<Vec<u8>> {
+    fn test_neovim() -> Neovim<CountingHandler> {
         Neovim {
             inner: Arc::new(NeovimInner {
                 writer: Mutex::new(model::EncodeState::new(Vec::new())),
@@ -673,7 +660,7 @@ mod tests {
         let mut input = Cursor::new(bytes);
         decoder.read_next_chunk(&mut input).await.unwrap();
         let mut reader = Cursor::new(Vec::new());
-        let msg = Neovim::<Vec<u8>>::decode_next::<CountingHandler, _>(&mut decoder, &mut reader)
+        let msg = Neovim::<CountingHandler>::decode_next(&mut decoder, &mut reader)
             .await
             .unwrap();
 
@@ -706,7 +693,7 @@ mod tests {
         let mut prefix_reader = Cursor::new(prefix.to_vec());
         decoder.read_next_chunk(&mut prefix_reader).await.unwrap();
         let mut reader = Cursor::new(redraw[prefix.len()..].to_vec());
-        let msg = Neovim::<Vec<u8>>::decode_next::<CountingHandler, _>(&mut decoder, &mut reader)
+        let msg = Neovim::<CountingHandler>::decode_next(&mut decoder, &mut reader)
             .await
             .unwrap();
 
