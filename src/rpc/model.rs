@@ -8,7 +8,7 @@ use std::{
 use bytes::{Buf, Bytes, BytesMut};
 use rmp::{
     Marker,
-    decode::ValueReadError,
+    decode::{DecodeStringError, ValueReadError, bytes::BytesReadError},
     encode::{write_array_len, write_str, write_uint},
 };
 use rmpv::{
@@ -19,7 +19,10 @@ use rmpv::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use crate::error::{DecodeError, EncodeError, InvalidMessage};
+use crate::{
+    error::{DecodeError, EncodeError, InvalidMessage},
+    rpc::handler::Handler,
+};
 
 const DECODE_READ_BUFFER_SIZE: usize = 64 * 1024;
 const MSG_TYPE_REQUEST: u64 = 0;
@@ -91,13 +94,16 @@ impl DecodeState {
         &self.rest[self.start..]
     }
 
-    pub fn try_decode_response(&mut self) -> Result<Option<RpcResponse>, Box<DecodeError>> {
+    pub fn try_decode_response<H>(&mut self) -> Result<Option<RpcResponse>, Box<DecodeError>>
+    where
+        H: Handler,
+    {
         loop {
             let (response, consumed) = {
                 let available_len = self.rest[self.start..].len();
                 let mut input = &self.rest[self.start..];
 
-                let response = match RpcResponse::try_decode(&mut input).map_err(|b| *b) {
+                let response = match RpcResponse::try_decode::<H>(&mut input).map_err(|b| *b) {
                     Ok(response) => response,
                     Err(DecodeError::BufferError(e)) if e.kind() == ErrorKind::UnexpectedEof => {
                         return Ok(None);
@@ -219,8 +225,21 @@ impl<'a, R: Read> EnvelopeReader<'a, R> {
     }
 }
 
+impl<'reader, 'input> EnvelopeReader<'reader, &'input [u8]> {
+    fn read_str(&mut self) -> Result<&'input str, Box<DecodeError>> {
+        let (method, rest) =
+            rmp::decode::read_str_from_slice(*self.reader).map_err(decode_string_error)?;
+        *self.reader = rest;
+        self.read += 1;
+        Ok(method)
+    }
+}
+
 impl RpcResponse {
-    fn try_decode<R: Read>(reader: &mut R) -> Result<Option<Self>, Box<DecodeError>> {
+    fn try_decode<H>(reader: &mut &[u8]) -> Result<Option<Self>, Box<DecodeError>>
+    where
+        H: Handler,
+    {
         use crate::error::InvalidMessage::*;
 
         let mut fields = EnvelopeReader::new(reader)?;
@@ -231,7 +250,16 @@ impl RpcResponse {
         let msgtyp: u64 = fields.read_value()?.try_into().map_err(InvalidType)?;
 
         match msgtyp {
-            0 | 2 => {
+            0 => {
+                let msgid: u64 = fields.read_value()?.try_into().map_err(InvalidMsgid)?;
+                let method = fields.read_str()?;
+                H::handle_unknown_request(msgid, method);
+                fields.finish()?;
+                Ok(None)
+            }
+            2 => {
+                let method = fields.read_str()?;
+                H::handle_unknown_notify(method);
                 fields.finish()?;
                 Ok(None)
             }
@@ -255,6 +283,37 @@ impl RpcResponse {
             error,
             result,
         })
+    }
+}
+
+fn decode_string_error(err: DecodeStringError<'_, BytesReadError>) -> Box<DecodeError> {
+    let err = match err {
+        DecodeStringError::InvalidMarkerRead(err) => {
+            rmpv::decode::Error::InvalidMarkerRead(bytes_read_error(err))
+        }
+        DecodeStringError::InvalidDataRead(err) => {
+            rmpv::decode::Error::InvalidDataRead(bytes_read_error(err))
+        }
+        DecodeStringError::BufferSizeTooSmall(_) => {
+            let err = io::Error::new(ErrorKind::UnexpectedEof, "incomplete msgpack string");
+            rmpv::decode::Error::InvalidDataRead(err)
+        }
+        DecodeStringError::TypeMismatch(_) => {
+            let err = io::Error::new(ErrorKind::InvalidData, "expected msgpack string");
+            rmpv::decode::Error::InvalidDataRead(err)
+        }
+        DecodeStringError::InvalidUtf8(_, _) => {
+            let err = io::Error::new(ErrorKind::InvalidData, "invalid utf-8 msgpack string");
+            rmpv::decode::Error::InvalidDataRead(err)
+        }
+    };
+    err.into()
+}
+
+fn bytes_read_error(err: BytesReadError) -> io::Error {
+    match err {
+        BytesReadError::InsufficientBytes { .. } => io::Error::new(ErrorKind::UnexpectedEof, err),
+        _ => io::Error::new(ErrorKind::InvalidData, err),
     }
 }
 
@@ -543,7 +602,10 @@ impl IntoVal<Value> for Vec<(Value, Value)> {
 #[cfg(test)]
 mod decode_state_tests {
     use super::*;
-    use crate::rpc::redraw::{RedrawFrame, RedrawNotification};
+    use crate::rpc::{
+        handler::Dummy,
+        redraw::{RedrawFrame, RedrawNotification},
+    };
     use std::io::Cursor;
 
     fn request(msgid: u64, method: &str) -> RpcMessage {
@@ -607,7 +669,7 @@ mod decode_state_tests {
     ) -> RpcResponse {
         loop {
             while decoder.has_rest() {
-                if let Some(response) = decoder.try_decode_response().unwrap() {
+                if let Some(response) = decoder.try_decode_response::<Dummy<Vec<u8>>>().unwrap() {
                     return response;
                 }
             }

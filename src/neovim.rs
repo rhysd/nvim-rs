@@ -130,7 +130,7 @@ where
         let handler_req = req.clone();
         let fut = async move {
             tokio::try_join!(
-                io_req.io_loop(reader, sender),
+                io_req.io_loop::<H, R>(reader, sender),
                 handler_req.handler_loop(handler, receiver),
             )
             .map(|_| ())
@@ -232,7 +232,7 @@ where
         let handler_instance = instance.clone();
         let fut = async move {
             tokio::try_join!(
-                io_instance.io_loop(reader, sender),
+                io_instance.io_loop::<H, R>(reader, sender),
                 handler_instance.handler_loop(handler, receiver),
             )
             .map(|_| ())
@@ -421,18 +421,19 @@ where
         }
     }
 
-    async fn io_loop<R>(
+    async fn io_loop<H, R>(
         self,
         mut reader: R,
         sender: UnboundedSender<RedrawFrame>,
     ) -> Result<(), Box<LoopError>>
     where
+        H: Handler,
         R: AsyncRead + Send + Unpin + 'static,
     {
         let mut decoder = model::DecodeState::new();
 
         loop {
-            let msg = match Self::decode_next(&mut decoder, &mut reader).await {
+            let msg = match Self::decode_next::<H, R>(&mut decoder, &mut reader).await {
                 Ok(msg) => msg,
                 Err(err) => {
                     let err = self.send_error_to_callers(&self.inner.queue, err).await?;
@@ -464,11 +465,12 @@ where
         }
     }
 
-    async fn decode_next<R>(
+    async fn decode_next<H, R>(
         decoder: &mut model::DecodeState,
         reader: &mut R,
     ) -> Result<HandlerMessage, DecodeError>
     where
+        H: Handler,
         R: AsyncRead + Send + Unpin + 'static,
     {
         loop {
@@ -480,7 +482,9 @@ where
                         return Ok(HandlerMessage::RedrawPayload(frame));
                     }
                     Ok(None) => {
-                        if let Some(response) = decoder.try_decode_response().map_err(|err| *err)? {
+                        if let Some(response) =
+                            decoder.try_decode_response::<H>().map_err(|err| *err)?
+                        {
                             return Ok(HandlerMessage::Response(response));
                         }
                     }
@@ -574,6 +578,10 @@ mod tests {
         redraw_count: Arc<AtomicUsize>,
     }
 
+    static UNKNOWN_REQUEST_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static UNKNOWN_NOTIFICATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static UNKNOWN_REQUEST_MSGID: AtomicU64 = AtomicU64::new(0);
+
     impl Handler for CountingHandler {
         type Writer = Vec<u8>;
 
@@ -585,6 +593,17 @@ mod tests {
             })?;
             self.redraw_count.fetch_add(1, Ordering::Relaxed);
             Ok(())
+        }
+
+        fn handle_unknown_notify(name: &str) {
+            assert_eq!(name, "ignored");
+            UNKNOWN_NOTIFICATION_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn handle_unknown_request(msgid: u64, name: &str) {
+            assert_eq!(name, "ignored");
+            UNKNOWN_REQUEST_MSGID.store(msgid, Ordering::Relaxed);
+            UNKNOWN_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -640,6 +659,10 @@ mod tests {
 
     #[tokio::test]
     async fn decode_next_ignores_incoming_requests_and_notifications() {
+        UNKNOWN_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        UNKNOWN_NOTIFICATION_COUNT.store(0, Ordering::Relaxed);
+        UNKNOWN_REQUEST_MSGID.store(0, Ordering::Relaxed);
+
         let result = Value::from("ok");
         let response = response_bytes(7, result.clone(), Value::Nil);
         let mut bytes = ignored_request_bytes();
@@ -650,7 +673,7 @@ mod tests {
         let mut input = Cursor::new(bytes);
         decoder.read_next_chunk(&mut input).await.unwrap();
         let mut reader = Cursor::new(Vec::new());
-        let msg = Neovim::<Vec<u8>>::decode_next(&mut decoder, &mut reader)
+        let msg = Neovim::<Vec<u8>>::decode_next::<CountingHandler, _>(&mut decoder, &mut reader)
             .await
             .unwrap();
 
@@ -666,6 +689,10 @@ mod tests {
             }
             msg => panic!("unexpected message: {msg:?}"),
         }
+
+        assert_eq!(UNKNOWN_REQUEST_COUNT.load(Ordering::Relaxed), 1);
+        assert_eq!(UNKNOWN_NOTIFICATION_COUNT.load(Ordering::Relaxed), 1);
+        assert_eq!(UNKNOWN_REQUEST_MSGID.load(Ordering::Relaxed), 99);
     }
 
     #[tokio::test]
@@ -679,7 +706,7 @@ mod tests {
         let mut prefix_reader = Cursor::new(prefix.to_vec());
         decoder.read_next_chunk(&mut prefix_reader).await.unwrap();
         let mut reader = Cursor::new(redraw[prefix.len()..].to_vec());
-        let msg = Neovim::<Vec<u8>>::decode_next(&mut decoder, &mut reader)
+        let msg = Neovim::<Vec<u8>>::decode_next::<CountingHandler, _>(&mut decoder, &mut reader)
             .await
             .unwrap();
 

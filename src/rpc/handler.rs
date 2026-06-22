@@ -18,6 +18,10 @@ pub trait Handler: Send + Sync + Clone + 'static {
     fn handle_redraw(&self, _redraw: RedrawNotification<'_>) -> RedrawDecodeResult<()> {
         Ok(())
     }
+
+    fn handle_unknown_notify(_name: &str) {}
+
+    fn handle_unknown_request(_msgid: u64, _name: &str) {}
 }
 
 /// The dummy handler ignores redraw notifications.

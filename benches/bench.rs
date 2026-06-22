@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use navy_nvim_rs::rpc::{
+    handler::Dummy,
     model::{
         DecodeState, EncodeState, MessageType, RpcMessage, encode_single_string_arg_msg_to_state,
         encode_sync, encode_to_state,
@@ -180,7 +181,8 @@ async fn decode_redraw_frames_from_reader(
                     frame_bytes += black_box(frame.as_bytes()).len();
                 }
                 Ok(None) => {
-                    if let Some(response) = decoder.try_decode_response().unwrap() {
+                    if let Some(response) = decoder.try_decode_response::<Dummy<Vec<u8>>>().unwrap()
+                    {
                         black_box(response);
                     } else {
                         break;
@@ -215,7 +217,8 @@ async fn decode_non_redraw_messages_from_reader(
             match RedrawFrameInfo::probe(decoder.rest()) {
                 Ok(Some(_)) => panic!("unexpected redraw frame"),
                 Ok(None) => {
-                    if let Some(response) = decoder.try_decode_response().unwrap() {
+                    if let Some(response) = decoder.try_decode_response::<Dummy<Vec<u8>>>().unwrap()
+                    {
                         black_box(response);
                         decoded += 1;
                         if decoded == count {
