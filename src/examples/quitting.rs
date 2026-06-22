@@ -32,17 +32,12 @@
 //!
 //! Some overview over the code:
 //!
-//! * Since we're not interested in handling anything, our `NeovimHandler` is a
-//!   [`Dummy`](crate::rpc::handler::Dummy) that does nothing on requests and
-//!   notifications. The `Spawner` implementation uses
-//!   [`tokio::spawn`](tokio::spawn) to run request handlers on the surrounding
-//!   runtime.
+//! * Since we're not interested in handling redraw notifications, our
+//!   `NeovimHandler` is a [`Dummy`](crate::rpc::handler::Dummy).
 //!
 //! * Any shutdown logic should be handled after the channel was closed. We
 //!   don't actually need to inspect the error, since the application will shut
-//!   down no matter what. If we need access to our handler for that, we should
-//!   implement [`Drop`](std::ops::Drop) for it, see
-//!   [`handler_drop`](crate::examples::handler_drop).
+//!   down no matter what.
 //!
 //! * The last command (the one that instructs neovim to close the channel) will
 //!   not receive an answer anymore, but an error. We just show the error and its

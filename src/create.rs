@@ -5,7 +5,6 @@
 //! OS.
 //!
 //! API functions should be run from inside the tokio runtime.
-use core::future::Future;
 use std::{
     fs::File,
     io::{self, Error},
@@ -38,36 +37,6 @@ use crate::{
     neovim::Neovim,
     rpc::handler::Handler,
 };
-
-/// A task to generalize spawning a future that returns `()`.
-///
-/// This is automatically implemented on your
-/// [`Handler`](crate::rpc::handler::Handler) using the appropriate runtime.
-///
-/// If you have a runtime that brings appropriate types, you can implement this
-/// on your [`Handler`](crate::rpc::handler::Handler) and use
-/// [`Neovim::new`](crate::neovim::Neovim::new) to connect to neovim.
-pub trait Spawner: Handler {
-    type Handle;
-
-    fn spawn<Fut>(&self, future: Fut) -> Self::Handle
-    where
-        Fut: Future<Output = ()> + Send + 'static;
-}
-
-impl<H> Spawner for H
-where
-    H: Handler,
-{
-    type Handle = JoinHandle<()>;
-
-    fn spawn<Fut>(&self, future: Fut) -> Self::Handle
-    where
-        Fut: Future<Output = ()> + Send + 'static,
-    {
-        spawn(future)
-    }
-}
 
 /// Create a std::io::File for stdout, which is not line-buffered, as
 /// opposed to std::io::Stdout.

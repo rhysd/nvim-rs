@@ -5,8 +5,8 @@
 //!
 //! ### Origins
 //!
-//! This library uses Rust's `async/await` to allow
-//! requests/notification to/from neovim to be arbitrarily nested.
+//! This library uses Rust's `async/await` to send requests and notifications to
+//! Neovim and to receive redraw notifications from Neovim.
 //!
 //! ### Status
 //!

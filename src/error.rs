@@ -25,7 +25,7 @@
 //!
 //! Use [`is_reader_error`](crate::error::LoopError::is_reader_error)
 //! to check if it might sense to try to show an error message to the neovim
-//! user (see [this example](crate::examples::scorched_earth)).
+//! user.
 //!
 //! Use
 //! [`CallError::is_channel_closed`](crate::error::CallError::is_channel_closed)
@@ -33,8 +33,8 @@
 //! [`LoopError::is_channel_closed`](crate::error::LoopError::is_channel_closed)
 //! to determine if the error originates from a closed channel. This means
 //! either neovim closed the channel actively, or neovim was closed. Often, this
-//! is not seen as a real error, but the signal for the plugin to quit. Again,
-//! see the [example](crate::examples::scorched_earth).
+//! is not seen as a real error, but the signal for the plugin to quit. See the
+//! [quitting example](crate::examples::quitting).
 use std::{error::Error, fmt, fmt::Display, io, io::ErrorKind, ops::RangeInclusive, sync::Arc};
 
 use rmpv::{Value, decode::Error as RmpvDecodeError, encode::Error as RmpvEncodeError};

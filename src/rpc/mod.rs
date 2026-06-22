@@ -7,5 +7,5 @@ pub mod model;
 pub mod redraw;
 pub mod unpack;
 
-pub use self::model::{IntoVal, RpcMessage};
+pub use self::model::{IntoVal, RpcMessage, RpcResponse};
 pub use rmpv::{Value, ValueRef};

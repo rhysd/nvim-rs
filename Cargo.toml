@@ -52,32 +52,14 @@ name = "bench"
 harness = false
 
 [[example]]
-name = "handler_drop"
-
-[[example]]
 name = "quitting"
-
-[[example]]
-name = "scorched_earth"
 
 [[example]]
 name = "basic"
 
-[[example]]
-name = "bench_tokio"
-
-[[example]]
-name = "nested_requests"
-
-[[test]]
-name = "nested_requests"
-
 [[test]]
 name = "connecting"
 path = "tests/connecting/mod.rs"
-
-[[test]]
-name = "notifications"
 
 [[test]]
 name = "basic"

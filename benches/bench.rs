@@ -180,8 +180,8 @@ async fn decode_redraw_frames_from_reader(
                     frame_bytes += black_box(frame.as_bytes()).len();
                 }
                 Ok(None) => {
-                    if let Some(msg) = decoder.try_decode_message().unwrap() {
-                        black_box(msg);
+                    if let Some(response) = decoder.try_decode_response().unwrap() {
+                        black_box(response);
                     } else {
                         break;
                     }
@@ -215,8 +215,8 @@ async fn decode_non_redraw_messages_from_reader(
             match RedrawFrameInfo::probe(decoder.rest()) {
                 Ok(Some(_)) => panic!("unexpected redraw frame"),
                 Ok(None) => {
-                    if let Some(msg) = decoder.try_decode_message().unwrap() {
-                        black_box(msg);
+                    if let Some(response) = decoder.try_decode_response().unwrap() {
+                        black_box(response);
                         decoded += 1;
                         if decoded == count {
                             return decoded;
@@ -447,6 +447,7 @@ fn bench_decode(c: &mut Criterion) {
 
     const NON_REDRAW_RPC_BATCH_COUNT: usize = 64;
     let non_redraw_rpc_batch = non_redraw_rpc_batch(NON_REDRAW_RPC_BATCH_COUNT);
+    let non_redraw_rpc_response_count = NON_REDRAW_RPC_BATCH_COUNT.div_ceil(2);
     group.throughput(Throughput::Bytes(non_redraw_rpc_batch.len() as u64));
     group.bench_function("non_redraw_rpc_batch", |b| {
         b.to_async(&runtime).iter_batched(
@@ -456,7 +457,7 @@ fn bench_decode(c: &mut Criterion) {
                     decode_non_redraw_messages_from_reader(
                         &mut decoder,
                         bytes,
-                        NON_REDRAW_RPC_BATCH_COUNT,
+                        non_redraw_rpc_response_count,
                     )
                     .await,
                 )
