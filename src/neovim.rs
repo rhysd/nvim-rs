@@ -18,9 +18,9 @@ use tokio::sync::{
 use crate::{
     error::{CallError, DecodeError, EncodeError, HandshakeError, LoopError},
     rpc::{
+        decode::{DecodeState, RpcResponse},
+        encode::{self, EncodeState, IntoVal, MessageType, RpcMessage},
         handler::Handler,
-        model,
-        model::{IntoVal, MessageType, RpcMessage, RpcResponse},
         redraw::{RedrawDecodeError, RedrawFrame, RedrawFrameInfo},
     },
     uioptions::UiAttachOptions,
@@ -67,7 +67,7 @@ pub(crate) struct NeovimInner<W>
 where
     W: AsyncWrite + Send + Unpin + 'static,
 {
-    writer: Mutex<model::EncodeState<W>>,
+    writer: Mutex<EncodeState<W>>,
     queue: Queue,
     msgid_counter: AtomicU64,
 }
@@ -103,7 +103,7 @@ impl<H: Handler> Neovim<H> {
     {
         let req = Neovim {
             inner: Arc::new(NeovimInner {
-                writer: Mutex::new(model::EncodeState::new(writer)),
+                writer: Mutex::new(EncodeState::new(writer)),
                 queue: SyncMutex::new(Vec::new()),
                 msgid_counter: AtomicU64::new(0),
             }),
@@ -148,7 +148,7 @@ impl<H: Handler> Neovim<H> {
     {
         let instance = Neovim {
             inner: Arc::new(NeovimInner {
-                writer: Mutex::new(model::EncodeState::new(writer)),
+                writer: Mutex::new(EncodeState::new(writer)),
                 queue: SyncMutex::new(Vec::new()),
                 msgid_counter: AtomicU64::new(0),
             }),
@@ -169,7 +169,7 @@ impl<H: Handler> Neovim<H> {
             method: "nvim_exec_lua".to_owned(),
             params: call_args![format!("return '{message}'"), Vec::<Value>::new()],
         };
-        model::encode_to_state(&instance.inner.writer, req).await?;
+        encode::encode_to_state(&instance.inner.writer, req).await?;
 
         let expected_resp = RpcMessage::RpcResponse {
             msgid,
@@ -177,7 +177,7 @@ impl<H: Handler> Neovim<H> {
             result: rmpv::Value::String(message.into()),
         };
         let mut expected_data = Vec::new();
-        model::encode_sync(&mut expected_data, expected_resp)
+        encode::encode_sync(&mut expected_data, expected_resp)
             .expect("Encoding static data can't fail");
         let mut actual_data = Vec::new();
         let mut start = 0;
@@ -241,7 +241,7 @@ impl<H: Handler> Neovim<H> {
 
         self.inner.queue.lock().push((msgid, sender));
 
-        model::encode_to_state(&self.inner.writer, req).await?;
+        encode::encode_to_state(&self.inner.writer, req).await?;
 
         Ok(receiver)
     }
@@ -256,7 +256,7 @@ impl<H: Handler> Neovim<H> {
 
         self.inner.queue.lock().push((msgid, sender));
 
-        model::encode_single_string_arg_msg_to_state(
+        encode::encode_single_string_arg_msg_to_state(
             &self.inner.writer,
             MessageType::Request(msgid),
             method,
@@ -277,7 +277,7 @@ impl<H: Handler> Neovim<H> {
 
         self.inner.queue.lock().push((msgid, sender));
 
-        model::encode_value_ref_to_state(
+        encode::encode_value_ref_to_state(
             &self.inner.writer,
             MessageType::Request(msgid),
             method,
@@ -320,7 +320,7 @@ impl<H: Handler> Neovim<H> {
         method: &str,
         arg: &str,
     ) -> Result<(), Box<CallError>> {
-        model::encode_single_string_arg_msg_to_state(
+        encode::encode_single_string_arg_msg_to_state(
             &self.inner.writer,
             MessageType::Notification,
             method,
@@ -348,7 +348,7 @@ impl<H: Handler> Neovim<H> {
         method: &str,
         args: &[ValueRef<'_>],
     ) -> Result<(), Box<CallError>> {
-        model::encode_value_ref_to_state(
+        encode::encode_value_ref_to_state(
             &self.inner.writer,
             MessageType::Notification,
             method,
@@ -409,7 +409,7 @@ impl<H: Handler> Neovim<H> {
     where
         R: AsyncRead + Send + Unpin + 'static,
     {
-        let mut decoder = model::DecodeState::new();
+        let mut decoder = DecodeState::new();
 
         loop {
             let msg = match Self::decode_next(&mut decoder, &mut reader).await {
@@ -445,7 +445,7 @@ impl<H: Handler> Neovim<H> {
     }
 
     async fn decode_next<R>(
-        decoder: &mut model::DecodeState,
+        decoder: &mut DecodeState,
         reader: &mut R,
     ) -> Result<HandlerMessage, DecodeError>
     where
@@ -628,7 +628,7 @@ mod tests {
     fn test_neovim() -> Neovim<CountingHandler> {
         Neovim {
             inner: Arc::new(NeovimInner {
-                writer: Mutex::new(model::EncodeState::new(Vec::new())),
+                writer: Mutex::new(EncodeState::new(Vec::new())),
                 queue: SyncMutex::new(Vec::new()),
                 msgid_counter: AtomicU64::new(0),
             }),
@@ -647,7 +647,7 @@ mod tests {
         bytes.extend_from_slice(&ignored_notification_bytes());
         bytes.extend_from_slice(&response);
 
-        let mut decoder = model::DecodeState::new();
+        let mut decoder = DecodeState::new();
         let mut input = Cursor::new(bytes);
         decoder.read_next_chunk(&mut input).await.unwrap();
         let mut reader = Cursor::new(Vec::new());
@@ -680,7 +680,7 @@ mod tests {
 
         assert!(redraw.starts_with(&prefix));
 
-        let mut decoder = model::DecodeState::new();
+        let mut decoder = DecodeState::new();
         let mut prefix_reader = Cursor::new(prefix.to_vec());
         decoder.read_next_chunk(&mut prefix_reader).await.unwrap();
         let mut reader = Cursor::new(redraw[prefix.len()..].to_vec());

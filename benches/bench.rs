@@ -1,11 +1,12 @@
 use bytes::Bytes;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use navy_nvim_rs::rpc::{
-    handler::Dummy,
-    model::{
-        DecodeState, EncodeState, MessageType, RpcMessage, encode_single_string_arg_msg_to_state,
-        encode_sync, encode_to_state,
+    decode::DecodeState,
+    encode::{
+        EncodeState, MessageType, RpcMessage, encode_single_string_arg_msg_to_state, encode_sync,
+        encode_to_state,
     },
+    handler::Dummy,
     redraw::{
         RedrawDecodeError, RedrawDecodeResult, RedrawFrame, RedrawFrameInfo, RedrawNotification,
     },

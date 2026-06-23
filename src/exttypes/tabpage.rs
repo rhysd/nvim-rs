@@ -5,7 +5,7 @@ use crate::{
     error::CallError,
     exttypes::Window,
     impl_exttype_traits,
-    rpc::{handler::Handler, model::IntoVal},
+    rpc::{encode::IntoVal, handler::Handler},
 };
 
 /// A struct representing a neovim tabpage. It is specific to a

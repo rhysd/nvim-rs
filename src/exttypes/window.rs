@@ -5,7 +5,7 @@ use crate::{
     Neovim,
     error::CallError,
     impl_exttype_traits,
-    rpc::{handler::Handler, model::IntoVal},
+    rpc::{encode::IntoVal, handler::Handler},
 };
 
 /// A struct representing a neovim window. It is specific to a

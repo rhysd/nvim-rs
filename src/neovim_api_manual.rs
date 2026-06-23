@@ -5,7 +5,7 @@ use crate::{
     Buffer, Tabpage, Window,
     error::CallError,
     neovim::Neovim,
-    rpc::{handler::Handler, model::IntoVal, unpack::TryUnpack},
+    rpc::{encode::IntoVal, handler::Handler, unpack::TryUnpack},
 };
 
 impl<H: Handler> Neovim<H> {
