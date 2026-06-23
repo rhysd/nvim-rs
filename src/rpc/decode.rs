@@ -14,7 +14,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
     error::{DecodeError, InvalidMessage},
-    rpc::handler::Handler,
+    rpc::{handler::Handler, skip::skip_value},
 };
 
 const DECODE_READ_BUFFER_SIZE: usize = 64 * 1024;
@@ -173,15 +173,6 @@ impl<'a, R: Read> EnvelopeReader<'a, R> {
         Ok(value)
     }
 
-    #[inline]
-    fn finish(mut self) -> Result<(), Box<DecodeError>> {
-        while self.read < self.len {
-            read_value(self.reader)?;
-            self.read += 1;
-        }
-        Ok(())
-    }
-
     fn read_len(reader: &mut R) -> Result<u32, Box<DecodeError>> {
         match rmp::decode::read_array_len(reader) {
             Ok(len) => Ok(len),
@@ -201,6 +192,16 @@ impl<'reader, 'input> EnvelopeReader<'reader, &'input [u8]> {
         *self.reader = rest;
         self.read += 1;
         Ok(method)
+    }
+
+    #[inline]
+    fn finish(mut self) -> Result<(), Box<DecodeError>> {
+        while self.read < self.len {
+            let consumed = skip_value(self.reader)?;
+            *self.reader = &self.reader[consumed..];
+            self.read += 1;
+        }
+        Ok(())
     }
 }
 
@@ -237,7 +238,7 @@ impl RpcResponse {
         }
     }
 
-    fn decode<R: Read>(mut fields: EnvelopeReader<'_, R>) -> Result<Self, Box<DecodeError>> {
+    fn decode(mut fields: EnvelopeReader<'_, &[u8]>) -> Result<Self, Box<DecodeError>> {
         use crate::error::InvalidMessage::*;
 
         fields.require_len(4)?;
@@ -256,6 +257,15 @@ impl RpcResponse {
 }
 
 fn decode_string_error(err: DecodeStringError<'_, BytesReadError>) -> Box<DecodeError> {
+    fn bytes_read_error(err: BytesReadError) -> io::Error {
+        match err {
+            BytesReadError::InsufficientBytes { .. } => {
+                io::Error::new(ErrorKind::UnexpectedEof, err)
+            }
+            _ => io::Error::new(ErrorKind::InvalidData, err),
+        }
+    }
+
     let err = match err {
         DecodeStringError::InvalidMarkerRead(err) => {
             rmpv::decode::Error::InvalidMarkerRead(bytes_read_error(err))
@@ -277,13 +287,6 @@ fn decode_string_error(err: DecodeStringError<'_, BytesReadError>) -> Box<Decode
         }
     };
     err.into()
-}
-
-fn bytes_read_error(err: BytesReadError) -> io::Error {
-    match err {
-        BytesReadError::InsufficientBytes { .. } => io::Error::new(ErrorKind::UnexpectedEof, err),
-        _ => io::Error::new(ErrorKind::InvalidData, err),
-    }
 }
 
 #[inline]
@@ -414,6 +417,68 @@ mod tests {
             decode_next_response_from_state(&mut decoder, &mut reader).await,
             expected
         );
+    }
+
+    #[test]
+    fn decode_state_skips_extra_response_fields_without_decoding_values() {
+        let extra = Value::from(vec![
+            Value::from(vec![(
+                Value::from("nested"),
+                Value::from(vec![Value::from(1), Value::Nil, Value::from("tail")]),
+            )]),
+            Value::from(true),
+        ]);
+        let bytes = encoded_value(Value::from(vec![
+            Value::from(1),
+            Value::from(9),
+            Value::Nil,
+            Value::from("ok"),
+            extra,
+        ]));
+        let mut decoder = decode_state_from_bytes(bytes);
+
+        let response = decoder
+            .try_decode_response::<Dummy<Vec<u8>>>()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(response, rpc_response(9, Value::from("ok")));
+        assert!(!decoder.has_rest());
+    }
+
+    #[test]
+    fn decode_state_waits_when_extra_response_field_is_incomplete() {
+        let mut bytes = vec![
+            Marker::FixArray(5).to_u8(),
+            Marker::FixPos(1).to_u8(),
+            Marker::FixPos(9).to_u8(),
+            Marker::Null.to_u8(),
+            Marker::FixStr(2).to_u8(),
+            b'o',
+            b'k',
+            Marker::Str8.to_u8(),
+            2,
+            b'x',
+        ];
+        let mut decoder = decode_state_from_bytes(bytes.clone());
+
+        assert!(
+            decoder
+                .try_decode_response::<Dummy<Vec<u8>>>()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(decoder.rest(), bytes.as_slice());
+
+        bytes.push(b'y');
+        decoder.rest.extend_from_slice(&[b'y']);
+        let response = decoder
+            .try_decode_response::<Dummy<Vec<u8>>>()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(response, rpc_response(9, Value::from("ok")));
+        assert!(!decoder.has_rest());
     }
 
     #[test]

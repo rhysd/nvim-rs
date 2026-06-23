@@ -6,6 +6,7 @@ pub mod decode;
 pub mod encode;
 pub mod handler;
 pub mod redraw;
+mod skip;
 pub mod unpack;
 
 pub use self::{
