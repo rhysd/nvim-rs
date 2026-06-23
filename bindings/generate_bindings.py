@@ -12,23 +12,23 @@ import datetime
 INPUT = 'bindings'
 
 MANUALLY_IMPLEMENTED = [
-        "nvim_ui_attach",
-        "nvim_tabpage_list_wins",
-        "nvim_tabpage_get_win",
-        "nvim_win_get_buf",
-        "nvim_win_get_tabpage",
-        "nvim_list_bufs",
-        "nvim_get_current_buf",
-        "nvim_list_wins",
-        "nvim_get_current_win",
-        "nvim_create_buf",
-        "nvim_open_win",
-        "nvim_input",
-        "nvim_ui_set_focus",
-        "nvim_ui_try_resize",
-        "nvim_list_tabpages",
-        "nvim_get_current_tabpage",
-        ]
+    "nvim_ui_attach",
+    "nvim_tabpage_list_wins",
+    "nvim_tabpage_get_win",
+    "nvim_win_get_buf",
+    "nvim_win_get_tabpage",
+    "nvim_list_bufs",
+    "nvim_get_current_buf",
+    "nvim_list_wins",
+    "nvim_get_current_win",
+    "nvim_create_buf",
+    "nvim_open_win",
+    "nvim_input",
+    "nvim_ui_set_focus",
+    "nvim_ui_try_resize",
+    "nvim_list_tabpages",
+    "nvim_get_current_tabpage",
+]
 
 def decutf8(inp):
     """
@@ -68,34 +68,34 @@ class NeovimTypeVal:
     """
     # msgpack simple types types
     SIMPLETYPES_REF = {
-            'Array': 'Vec<Value>',
-            'ArrayOf(Integer, 2)': '(i64, i64)',
-            'void': '()',
-            'Integer': 'i64',
-            'Float': 'f64',
-            'Boolean': 'bool',
-            'String': '&str',
-            'Object': 'Value',
-            'Dict': 'Vec<(Value, Value)>',
-        }
+        'Array': 'Vec<Value>',
+        'ArrayOf(Integer, 2)': '(i64, i64)',
+        'void': '()',
+        'Integer': 'i64',
+        'Float': 'f64',
+        'Boolean': 'bool',
+        'String': '&str',
+        'Object': 'Value',
+        'Dict': 'Vec<(Value, Value)>',
+    }
 
     SIMPLETYPES_VAL = {
-            'Array': 'Vec<Value>',
-            'ArrayOf(Integer, 2)': '(i64, i64)',
-            'void': '()',
-            'Integer': 'i64',
-            'Float': 'f64',
-            'Boolean': 'bool',
-            'String': 'String',
-            'Object': 'Value',
-            'Dict': 'Vec<(Value, Value)>',
-        }
+        'Array': 'Vec<Value>',
+        'ArrayOf(Integer, 2)': '(i64, i64)',
+        'void': '()',
+        'Integer': 'i64',
+        'Float': 'f64',
+        'Boolean': 'bool',
+        'String': 'String',
+        'Object': 'Value',
+        'Dict': 'Vec<(Value, Value)>',
+    }
     # msgpack extension types
     EXTTYPES = {
-            'Window': 'Window<W>',
-            'Buffer': 'Buffer<W>',
-            'Tabpage': 'Tabpage<W>',
-        }
+        'Window': 'Window<H>',
+        'Buffer': 'Buffer<H>',
+        'Tabpage': 'Tabpage<H>',
+    }
     # Unbound Array types
     UNBOUND_ARRAY = re.compile(r'ArrayOf\(\s*(\w+)\s*\)')
 

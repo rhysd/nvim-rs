@@ -8,10 +8,7 @@ use crate::{
     rpc::{handler::Handler, model::IntoVal, unpack::TryUnpack},
 };
 
-impl<H> Neovim<H>
-where
-    H: Handler,
-{
+impl<H: Handler> Neovim<H> {
     pub async fn list_bufs(&self) -> Result<Vec<Buffer<H>>, Box<CallError>> {
         match self.call("nvim_list_bufs", call_args![]).await?? {
             Value::Array(arr) => Ok(arr

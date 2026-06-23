@@ -1,22 +1,19 @@
 //! The auto generated API for [`neovim`](crate::neovim::Neovim)
 //!
 //! Auto generated {{date}}
-use futures::io::AsyncWrite;
-
 use crate::{
   error::CallError,
   neovim::*,
-  rpc::{unpack::TryUnpack, *},
+  rpc::{handler::Handler, unpack::TryUnpack, *},
   Buffer, Tabpage, Window,
 };
 
 {% for etype in exttypes %}
 
-impl<W> {{ etype.name }}<W>
-  where W: AsyncWrite + Send + Unpin + 'static
-  {
+impl<H: Handler> {{ etype.name }}<H>
+{
     #[must_use]
-    pub fn new(code_data: Value, neovim: Neovim<W>) -> {{ etype.name }}<W>
+    pub fn new(code_data: Value, neovim: Neovim<H>) -> {{ etype.name }}<H>
     {
         {{ etype.name }} {
             code_data,
@@ -50,9 +47,7 @@ impl<W> {{ etype.name }}<W>
 {% endfor %}
 
 
-impl<W> Neovim<W>
-where
-      W: AsyncWrite + Send + Unpin + 'static,
+impl<H: Handler> Neovim<H>
 {
     {% for f in functions if not f.ext %}
     pub async fn {{f.name|replace('nvim_', '')}}(&self, {{f.argstring}}) -> Result<{{f.return_type.native_type_ret}}, Box<CallError>> {

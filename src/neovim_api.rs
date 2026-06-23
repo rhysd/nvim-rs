@@ -8,10 +8,7 @@ use crate::{
     rpc::{handler::Handler, unpack::TryUnpack, *},
 };
 
-impl<H> Buffer<H>
-where
-    H: Handler,
-{
+impl<H: Handler> Buffer<H> {
     #[must_use]
     pub fn new(code_data: Value, neovim: Neovim<H>) -> Buffer<H> {
         Buffer { code_data, neovim }
@@ -521,10 +518,7 @@ where
     }
 }
 
-impl<H> Window<H>
-where
-    H: Handler,
-{
+impl<H: Handler> Window<H> {
     #[must_use]
     pub fn new(code_data: Value, neovim: Neovim<H>) -> Window<H> {
         Window { code_data, neovim }
@@ -739,10 +733,7 @@ where
     }
 }
 
-impl<H> Tabpage<H>
-where
-    H: Handler,
-{
+impl<H: Handler> Tabpage<H> {
     #[must_use]
     pub fn new(code_data: Value, neovim: Neovim<H>) -> Tabpage<H> {
         Tabpage { code_data, neovim }
@@ -819,10 +810,7 @@ where
     }
 }
 
-impl<H> Neovim<H>
-where
-    H: Handler,
-{
+impl<H: Handler> Neovim<H> {
     pub async fn get_autocmds(
         &self,
         opts: Vec<(Value, Value)>,

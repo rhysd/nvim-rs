@@ -76,10 +76,7 @@ pub struct Neovim<H: Handler> {
     pub(crate) inner: Arc<NeovimInner<H::Writer>>,
 }
 
-impl<H> Clone for Neovim<H>
-where
-    H: Handler,
-{
+impl<H: Handler> Clone for Neovim<H> {
     fn clone(&self) -> Self {
         Neovim {
             inner: self.inner.clone(),
@@ -87,20 +84,14 @@ where
     }
 }
 
-impl<H> PartialEq for Neovim<H>
-where
-    H: Handler,
-{
+impl<H: Handler> PartialEq for Neovim<H> {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
-impl<H> Eq for Neovim<H> where H: Handler {}
+impl<H: Handler> Eq for Neovim<H> {}
 
-impl<H> Neovim<H>
-where
-    H: Handler,
-{
+impl<H: Handler> Neovim<H> {
     #[allow(clippy::new_ret_no_self)]
     pub fn new<R>(
         reader: R,
