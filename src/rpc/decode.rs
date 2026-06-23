@@ -221,16 +221,18 @@ impl RpcResponse {
 
         match msgtyp {
             MSG_TYPE_REQUEST => {
+                fields.require_len(4)?;
                 let msgid: u64 = fields.read_value()?.try_into().map_err(InvalidMsgid)?;
                 let method = fields.read_str()?;
-                H::handle_unknown_request(msgid, method);
                 fields.finish()?;
+                H::handle_unknown_request(msgid, method);
                 Ok(None)
             }
             MSG_TYPE_NOTIFICATION => {
+                fields.require_len(3)?;
                 let method = fields.read_str()?;
-                H::handle_unknown_notify(method);
                 fields.finish()?;
+                H::handle_unknown_notify(method);
                 Ok(None)
             }
             MSG_TYPE_RESPONSE => Self::decode(fields).map(Some),
@@ -302,13 +304,33 @@ fn read_value_from_marker<R: Read>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::InvalidMessage;
     use crate::rpc::{
         encode::{RpcMessage, encode_sync},
-        handler::Dummy,
+        handler::{Dummy, Handler},
         redraw::{RedrawFrame, RedrawNotification},
     };
     use rmpv::encode::write_value;
-    use std::io::Cursor;
+    use std::{
+        io::Cursor,
+        sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    };
+
+    #[derive(Clone)]
+    struct CountingHandler;
+
+    static UNKNOWN_REQUEST_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static UNKNOWN_REQUEST_MSGID: AtomicU64 = AtomicU64::new(0);
+
+    impl Handler for CountingHandler {
+        type Writer = Vec<u8>;
+
+        fn handle_unknown_request(msgid: u64, name: &str) {
+            assert_eq!(name, "ignored");
+            UNKNOWN_REQUEST_MSGID.store(msgid, Ordering::Relaxed);
+            UNKNOWN_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
     fn request(msgid: u64, method: &str) -> RpcMessage {
         RpcMessage::RpcRequest {
@@ -417,6 +439,108 @@ mod tests {
             decode_next_response_from_state(&mut decoder, &mut reader).await,
             expected
         );
+    }
+
+    #[test]
+    fn decode_state_calls_unknown_request_after_complete_payload() {
+        UNKNOWN_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        UNKNOWN_REQUEST_MSGID.store(0, Ordering::Relaxed);
+
+        let mut bytes = vec![
+            Marker::FixArray(4).to_u8(),
+            Marker::FixPos(0).to_u8(),
+            Marker::FixPos(9).to_u8(),
+            Marker::FixStr(7).to_u8(),
+            b'i',
+            b'g',
+            b'n',
+            b'o',
+            b'r',
+            b'e',
+            b'd',
+            Marker::FixArray(1).to_u8(),
+            Marker::Str8.to_u8(),
+            2,
+            b'x',
+        ];
+        let mut decoder = decode_state_from_bytes(bytes.clone());
+
+        assert!(
+            decoder
+                .try_decode_response::<CountingHandler>()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(UNKNOWN_REQUEST_COUNT.load(Ordering::Relaxed), 0);
+        assert_eq!(decoder.rest(), bytes.as_slice());
+
+        bytes.push(b'y');
+        decoder.rest.extend_from_slice(&[b'y']);
+
+        assert!(
+            decoder
+                .try_decode_response::<CountingHandler>()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(UNKNOWN_REQUEST_COUNT.load(Ordering::Relaxed), 1);
+        assert_eq!(UNKNOWN_REQUEST_MSGID.load(Ordering::Relaxed), 9);
+        assert!(!decoder.has_rest());
+    }
+
+    #[test]
+    fn decode_state_rejects_short_request_without_consuming_next_frame() {
+        let mut bytes = vec![
+            Marker::FixArray(3).to_u8(),
+            Marker::FixPos(0).to_u8(),
+            Marker::FixPos(9).to_u8(),
+            Marker::FixStr(7).to_u8(),
+            b'i',
+            b'g',
+            b'n',
+            b'o',
+            b'r',
+            b'e',
+            b'd',
+        ];
+        bytes.extend_from_slice(&encoded(response(1, Value::from("ok"))));
+        let mut decoder = decode_state_from_bytes(bytes.clone());
+
+        let err = decoder.try_decode_response::<Dummy<Vec<u8>>>().unwrap_err();
+
+        assert!(matches!(
+            *err,
+            DecodeError::InvalidMessage(InvalidMessage::WrongArrayLength(range, 3))
+                if range == (4..=4)
+        ));
+        assert_eq!(decoder.rest(), bytes.as_slice());
+    }
+
+    #[test]
+    fn decode_state_rejects_short_notification_without_consuming_next_frame() {
+        let mut bytes = vec![
+            Marker::FixArray(2).to_u8(),
+            Marker::FixPos(2).to_u8(),
+            Marker::FixStr(7).to_u8(),
+            b'i',
+            b'g',
+            b'n',
+            b'o',
+            b'r',
+            b'e',
+            b'd',
+        ];
+        bytes.extend_from_slice(&encoded(response(1, Value::from("ok"))));
+        let mut decoder = decode_state_from_bytes(bytes.clone());
+
+        let err = decoder.try_decode_response::<Dummy<Vec<u8>>>().unwrap_err();
+
+        assert!(matches!(
+            *err,
+            DecodeError::InvalidMessage(InvalidMessage::WrongArrayLength(range, 2))
+                if range == (3..=3)
+        ));
+        assert_eq!(decoder.rest(), bytes.as_slice());
     }
 
     #[test]

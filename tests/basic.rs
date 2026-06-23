@@ -26,10 +26,20 @@ fn basic() {
     );
     let c3 = r#"wqa!"#;
 
-    let status = Command::new(nvim_path())
-        .args(["-u", "NONE", "--headless", "-c", &c1, "-c", &c2, "-c", c3])
-        .status()
-        .unwrap();
+    let args = &[
+        "-u",
+        "NONE",
+        "-i",
+        "NONE",
+        "--headless",
+        "-c",
+        &c1,
+        "-c",
+        &c2,
+        "-c",
+        c3,
+    ];
+    let status = Command::new(nvim_path()).args(args).status().unwrap();
 
     assert!(status.success());
 
