@@ -20,11 +20,14 @@ fn basic() {
         viml_escape("target/debug/examples/basic"),
         viml_escape(buf_path.to_str().unwrap())
     );
-    let c2 = r#"sleep 100m"#;
+    let c2 = format!(
+        "if wait(5000, {{-> filereadable('{}')}}) < 0 | cquit | endif",
+        viml_escape(buf_path.to_str().unwrap())
+    );
     let c3 = r#"wqa!"#;
 
     let status = Command::new(nvim_path())
-        .args(["-u", "NONE", "--headless", "-c", &c1, "-c", c2, "-c", c3])
+        .args(["-u", "NONE", "--headless", "-c", &c1, "-c", &c2, "-c", c3])
         .status()
         .unwrap();
 
