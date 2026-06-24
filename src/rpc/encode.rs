@@ -1,7 +1,7 @@
 //! Encoding msgpack-rpc messages to Neovim.
 use std::io::Write;
 
-use rmp::encode::{write_array_len, write_str, write_uint};
+use rmp::encode::{write_array_len, write_nil, write_str, write_uint};
 use rmpv::{
     Value, ValueRef,
     encode::{write_value, write_value_ref},
@@ -136,6 +136,20 @@ fn write_message_value_ref<W: Write>(
     Ok(())
 }
 
+#[inline]
+fn write_error_response<W: Write>(
+    writer: &mut W,
+    msgid: u64,
+    error: &str,
+) -> Result<(), Box<EncodeError>> {
+    write_array_len(writer, 4)?;
+    write_uint(writer, MSG_TYPE_RESPONSE)?;
+    write_uint(writer, msgid)?;
+    write_str(writer, error)?;
+    write_nil(writer)?;
+    Ok(())
+}
+
 /// State reused while encoding msgpack-rpc messages to a stream.
 pub struct EncodeState<W> {
     writer: W,
@@ -152,22 +166,11 @@ impl<W> EncodeState<W> {
         }
     }
 
+    #[cfg(test)]
     #[inline]
     #[must_use]
-    pub fn into_inner(self) -> W {
-        self.writer
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn writer(&self) -> &W {
+    pub(crate) fn writer(&self) -> &W {
         &self.writer
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn writer_mut(&mut self) -> &mut W {
-        &mut self.writer
     }
 }
 
@@ -241,6 +244,26 @@ where
 
     buffer.clear();
     write_message_value_ref(buffer, message_type, method, args)?;
+    writer.write_all(buffer).await?;
+    writer.flush().await?;
+
+    Ok(())
+}
+
+/// Encode an error response with a string error and nil result.
+pub async fn encode_error_response_to_state<W>(
+    state: &Mutex<EncodeState<W>>,
+    msgid: u64,
+    error: &str,
+) -> Result<(), Box<EncodeError>>
+where
+    W: AsyncWrite + Send + Unpin + 'static,
+{
+    let mut state = state.lock().await;
+    let EncodeState { writer, buffer } = &mut *state;
+
+    buffer.clear();
+    write_error_response(buffer, msgid, error)?;
     writer.write_all(buffer).await?;
     writer.flush().await?;
 
@@ -447,6 +470,20 @@ mod tests {
         let via_message = encoded(RpcMessage::RpcNotification {
             method: "nvim_ui_try_resize".to_owned(),
             params: args.iter().map(ValueRef::to_owned).collect(),
+        });
+
+        assert_eq!(direct, via_message);
+    }
+
+    #[test]
+    fn encode_error_response_sync_matches_rpc_message_encoding() {
+        let mut direct = Vec::new();
+        write_error_response(&mut direct, 9, "Not implemented").unwrap();
+
+        let via_message = encoded(RpcMessage::RpcResponse {
+            msgid: 9,
+            error: Value::from("Not implemented"),
+            result: Value::Nil,
         });
 
         assert_eq!(direct, via_message);

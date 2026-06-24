@@ -18,7 +18,7 @@ use tokio::sync::{
 use crate::{
     error::{CallError, DecodeError, EncodeError, HandshakeError, LoopError},
     rpc::{
-        decode::{DecodeState, RpcResponse},
+        decode::{DecodeState, IncomingMessage, RpcResponse},
         encode::{self, EncodeState, IntoVal, MessageType, RpcMessage},
         handler::Handler,
         redraw::{RedrawDecodeError, RedrawFrame, RedrawFrameInfo},
@@ -48,6 +48,7 @@ type Queue = SyncMutex<Vec<(u64, oneshot::Sender<ResponseResult>)>>;
 enum HandlerMessage {
     Response(RpcResponse),
     RedrawPayload(RedrawFrame),
+    UnknownRequest { msgid: u64 },
 }
 
 impl std::fmt::Debug for HandlerMessage {
@@ -57,6 +58,10 @@ impl std::fmt::Debug for HandlerMessage {
             Self::RedrawPayload(frame) => fmt
                 .debug_struct("RedrawPayload")
                 .field("len", &frame.consumed())
+                .finish(),
+            Self::UnknownRequest { msgid } => fmt
+                .debug_struct("UnknownRequest")
+                .field("msgid", msgid)
                 .finish(),
         }
     }
@@ -361,9 +366,9 @@ impl<H: Handler> Neovim<H> {
     async fn send_error_to_callers(
         &self,
         queue: &Queue,
-        err: DecodeError,
+        err: Box<DecodeError>,
     ) -> Result<Arc<DecodeError>, Box<LoopError>> {
-        let err = Arc::new(err);
+        let err: Arc<DecodeError> = Arc::from(err);
         let mut v: Vec<u64> = vec![];
 
         let mut queue = queue.lock();
@@ -425,6 +430,14 @@ impl<H: Handler> Neovim<H> {
                     // Send redraw notifications to handler_loop().
                     sender.send(frame).unwrap();
                 }
+                HandlerMessage::UnknownRequest { msgid } => {
+                    encode::encode_error_response_to_state(
+                        &self.inner.writer,
+                        msgid,
+                        "Not implemented",
+                    )
+                    .await?;
+                }
                 HandlerMessage::Response(RpcResponse {
                     msgid,
                     result,
@@ -447,7 +460,7 @@ impl<H: Handler> Neovim<H> {
     async fn decode_next<R>(
         decoder: &mut DecodeState,
         reader: &mut R,
-    ) -> Result<HandlerMessage, DecodeError>
+    ) -> Result<HandlerMessage, Box<DecodeError>>
     where
         R: AsyncRead + Send + Unpin + 'static,
     {
@@ -460,18 +473,35 @@ impl<H: Handler> Neovim<H> {
                         return Ok(HandlerMessage::RedrawPayload(frame));
                     }
                     Ok(None) => {
-                        if let Some(response) =
-                            decoder.try_decode_response::<H>().map_err(|err| *err)?
-                        {
-                            return Ok(HandlerMessage::Response(response));
+                        if let Some(decoded) = decoder.try_decode_message()? {
+                            let msg = match decoded.message {
+                                IncomingMessage::Response(response) => {
+                                    Some(HandlerMessage::Response(response))
+                                }
+                                IncomingMessage::Request { msgid, method } => {
+                                    H::handle_unknown_request(msgid, method);
+                                    Some(HandlerMessage::UnknownRequest { msgid })
+                                }
+                                IncomingMessage::Notification { method } => {
+                                    H::handle_unknown_notify(method);
+                                    None
+                                }
+                            };
+
+                            decoder.consume(decoded.consumed);
+
+                            if let Some(msg) = msg {
+                                return Ok(msg);
+                            }
+                            continue;
                         }
                     }
                     Err(RedrawDecodeError::Incomplete) => {}
-                    Err(err) => return Err(err.into()),
+                    Err(err) => return Err(Box::new(err.into())),
                 }
             }
 
-            decoder.read_next_chunk(reader).await.map_err(|err| *err)?;
+            decoder.read_next_chunk(reader).await?;
         }
     }
 
@@ -549,7 +579,10 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::rpc::redraw::{RedrawDecodeResult, RedrawNotification};
+    use crate::rpc::{
+        handler::Dummy,
+        redraw::{RedrawDecodeResult, RedrawNotification},
+    };
 
     #[derive(Clone)]
     struct CountingHandler {
@@ -625,7 +658,10 @@ mod tests {
         ]))
     }
 
-    fn test_neovim() -> Neovim<CountingHandler> {
+    fn test_neovim<H>() -> Neovim<H>
+    where
+        H: Handler<Writer = Vec<u8>>,
+    {
         Neovim {
             inner: Arc::new(NeovimInner {
                 writer: Mutex::new(EncodeState::new(Vec::new())),
@@ -636,7 +672,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decode_next_ignores_incoming_requests_and_notifications() {
+    async fn decode_next_reports_incoming_requests_and_ignores_notifications() {
         UNKNOWN_REQUEST_COUNT.store(0, Ordering::Relaxed);
         UNKNOWN_NOTIFICATION_COUNT.store(0, Ordering::Relaxed);
         UNKNOWN_REQUEST_MSGID.store(0, Ordering::Relaxed);
@@ -648,9 +684,23 @@ mod tests {
         bytes.extend_from_slice(&response);
 
         let mut decoder = DecodeState::new();
-        let mut input = Cursor::new(bytes);
-        decoder.read_next_chunk(&mut input).await.unwrap();
-        let mut reader = Cursor::new(Vec::new());
+        let mut reader = Cursor::new(bytes);
+
+        let msg = Neovim::<CountingHandler>::decode_next(&mut decoder, &mut reader)
+            .await
+            .unwrap();
+
+        match msg {
+            HandlerMessage::UnknownRequest { msgid } => {
+                assert_eq!(msgid, 99);
+            }
+            msg => panic!("unexpected message: {msg:?}"),
+        }
+
+        assert_eq!(UNKNOWN_REQUEST_COUNT.load(Ordering::Relaxed), 1);
+        assert_eq!(UNKNOWN_NOTIFICATION_COUNT.load(Ordering::Relaxed), 0);
+        assert_eq!(UNKNOWN_REQUEST_MSGID.load(Ordering::Relaxed), 99);
+
         let msg = Neovim::<CountingHandler>::decode_next(&mut decoder, &mut reader)
             .await
             .unwrap();
@@ -671,6 +721,26 @@ mod tests {
         assert_eq!(UNKNOWN_REQUEST_COUNT.load(Ordering::Relaxed), 1);
         assert_eq!(UNKNOWN_NOTIFICATION_COUNT.load(Ordering::Relaxed), 1);
         assert_eq!(UNKNOWN_REQUEST_MSGID.load(Ordering::Relaxed), 99);
+    }
+
+    #[tokio::test]
+    async fn io_loop_replies_to_incoming_unknown_request_with_default_error() {
+        let nvim = test_neovim::<Dummy<Vec<u8>>>();
+        let inner = nvim.inner.clone();
+        let (sender, _receiver) = unbounded_channel();
+
+        let err = nvim
+            .io_loop(Cursor::new(ignored_request_bytes()), sender)
+            .await
+            .unwrap_err();
+
+        assert!(err.is_channel_closed());
+
+        let writer = inner.writer.lock().await;
+        assert_eq!(
+            writer.writer(),
+            &response_bytes(99, Value::Nil, Value::from("Not implemented"))
+        );
     }
 
     #[tokio::test]
@@ -708,14 +778,17 @@ mod tests {
         sender.send(frame).unwrap();
         drop(sender);
 
-        test_neovim().handler_loop(handler, receiver).await.unwrap();
+        test_neovim::<CountingHandler>()
+            .handler_loop(handler, receiver)
+            .await
+            .unwrap();
 
         assert_eq!(redraw_count.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
     async fn notify_value_ref_writes_notification_without_queueing_request() {
-        let nvim = test_neovim();
+        let nvim = test_neovim::<CountingHandler>();
 
         nvim.notify_value_ref("nvim_ui_set_focus", &[ValueRef::Boolean(true)])
             .await

@@ -14,7 +14,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
     error::{DecodeError, InvalidMessage},
-    rpc::{handler::Handler, skip::skip_value},
+    rpc::skip::skip_value,
 };
 
 const DECODE_READ_BUFFER_SIZE: usize = 64 * 1024;
@@ -27,6 +27,19 @@ pub struct RpcResponse {
     pub msgid: u64,
     pub error: Value,
     pub result: Value,
+}
+
+#[derive(Debug)]
+pub enum IncomingMessage<'a> {
+    Response(RpcResponse),
+    Request { msgid: u64, method: &'a str },
+    Notification { method: &'a str },
+}
+
+#[derive(Debug)]
+pub struct DecodedMessage<'a> {
+    pub message: IncomingMessage<'a>,
+    pub consumed: usize,
 }
 
 /// State reused while decoding msgpack-rpc messages from a stream.
@@ -63,33 +76,23 @@ impl DecodeState {
         &self.rest[self.start..]
     }
 
-    pub fn try_decode_response<H>(&mut self) -> Result<Option<RpcResponse>, Box<DecodeError>>
-    where
-        H: Handler,
-    {
-        loop {
-            let (response, consumed) = {
-                let available_len = self.rest[self.start..].len();
-                let mut input = &self.rest[self.start..];
+    pub fn try_decode_message(&self) -> Result<Option<DecodedMessage<'_>>, Box<DecodeError>> {
+        let mut input = &self.rest[self.start..];
+        let available_len = input.len();
 
-                let response = match RpcResponse::try_decode::<H>(&mut input).map_err(|b| *b) {
-                    Ok(response) => response,
-                    Err(DecodeError::BufferError(e)) if e.kind() == ErrorKind::UnexpectedEof => {
-                        return Ok(None);
-                    }
-                    Err(err) => return Err(err.into()),
-                };
-
-                (response, available_len - input.len())
-            };
-
-            self.consume(consumed);
-
-            if let Some(response) = response {
-                return Ok(Some(response));
-            }
-            if !self.has_rest() {
-                return Ok(None);
+        match IncomingMessage::decode(&mut input) {
+            Ok(message) => Ok(Some(DecodedMessage {
+                message,
+                consumed: available_len - input.len(),
+            })),
+            Err(err) => {
+                if let DecodeError::BufferError(e) = err.as_ref()
+                    && e.kind() == ErrorKind::UnexpectedEof
+                {
+                    Ok(None)
+                } else {
+                    Err(err)
+                }
             }
         }
     }
@@ -205,11 +208,8 @@ impl<'reader, 'input> EnvelopeReader<'reader, &'input [u8]> {
     }
 }
 
-impl RpcResponse {
-    fn try_decode<H>(reader: &mut &[u8]) -> Result<Option<Self>, Box<DecodeError>>
-    where
-        H: Handler,
-    {
+impl<'a> IncomingMessage<'a> {
+    fn decode(reader: &mut &'a [u8]) -> Result<Self, Box<DecodeError>> {
         use crate::error::InvalidMessage::*;
 
         let mut fields = EnvelopeReader::new(reader)?;
@@ -225,21 +225,21 @@ impl RpcResponse {
                 let msgid: u64 = fields.read_value()?.try_into().map_err(InvalidMsgid)?;
                 let method = fields.read_str()?;
                 fields.finish()?;
-                H::handle_unknown_request(msgid, method);
-                Ok(None)
+                Ok(Self::Request { msgid, method })
             }
             MSG_TYPE_NOTIFICATION => {
                 fields.require_len(3)?;
                 let method = fields.read_str()?;
                 fields.finish()?;
-                H::handle_unknown_notify(method);
-                Ok(None)
+                Ok(Self::Notification { method })
             }
-            MSG_TYPE_RESPONSE => Self::decode(fields).map(Some),
+            MSG_TYPE_RESPONSE => RpcResponse::decode(fields).map(Self::Response),
             t => Err(UnknownMessageType(t).into()),
         }
     }
+}
 
+impl RpcResponse {
     fn decode(mut fields: EnvelopeReader<'_, &[u8]>) -> Result<Self, Box<DecodeError>> {
         use crate::error::InvalidMessage::*;
 
@@ -387,13 +387,54 @@ mod tests {
         }
     }
 
+    fn consume_next_response_from_state<H>(
+        decoder: &mut DecodeState,
+    ) -> Result<Option<RpcResponse>, Box<DecodeError>>
+    where
+        H: Handler,
+    {
+        loop {
+            let (consumed, response) = {
+                let Some(decoded) = decoder.try_decode_message()? else {
+                    return Ok(None);
+                };
+                let consumed = decoded.consumed;
+
+                let response = match decoded.message {
+                    IncomingMessage::Response(response) => Some(response),
+                    IncomingMessage::Request { msgid, method } => {
+                        H::handle_unknown_request(msgid, method);
+                        None
+                    }
+                    IncomingMessage::Notification { method } => {
+                        H::handle_unknown_notify(method);
+                        None
+                    }
+                };
+
+                (consumed, response)
+            };
+
+            decoder.consume(consumed);
+
+            if let Some(response) = response {
+                return Ok(Some(response));
+            }
+            if !decoder.has_rest() {
+                return Ok(None);
+            }
+        }
+    }
+
     async fn decode_next_response_from_state(
         decoder: &mut DecodeState,
         reader: &mut Cursor<Vec<u8>>,
     ) -> RpcResponse {
         loop {
             while decoder.has_rest() {
-                if let Some(response) = decoder.try_decode_response::<Dummy<Vec<u8>>>().unwrap() {
+                if let Some(response) =
+                    consume_next_response_from_state::<Dummy<Vec<u8>>>(decoder).unwrap()
+                {
                     return response;
                 }
             }
@@ -466,8 +507,7 @@ mod tests {
         let mut decoder = decode_state_from_bytes(bytes.clone());
 
         assert!(
-            decoder
-                .try_decode_response::<CountingHandler>()
+            consume_next_response_from_state::<CountingHandler>(&mut decoder)
                 .unwrap()
                 .is_none()
         );
@@ -478,8 +518,7 @@ mod tests {
         decoder.rest.extend_from_slice(&[b'y']);
 
         assert!(
-            decoder
-                .try_decode_response::<CountingHandler>()
+            consume_next_response_from_state::<CountingHandler>(&mut decoder)
                 .unwrap()
                 .is_none()
         );
@@ -504,9 +543,9 @@ mod tests {
             b'd',
         ];
         bytes.extend_from_slice(&encoded(response(1, Value::from("ok"))));
-        let mut decoder = decode_state_from_bytes(bytes.clone());
+        let decoder = decode_state_from_bytes(bytes.clone());
 
-        let err = decoder.try_decode_response::<Dummy<Vec<u8>>>().unwrap_err();
+        let err = decoder.try_decode_message().unwrap_err();
 
         assert!(matches!(
             *err,
@@ -531,9 +570,9 @@ mod tests {
             b'd',
         ];
         bytes.extend_from_slice(&encoded(response(1, Value::from("ok"))));
-        let mut decoder = decode_state_from_bytes(bytes.clone());
+        let decoder = decode_state_from_bytes(bytes.clone());
 
-        let err = decoder.try_decode_response::<Dummy<Vec<u8>>>().unwrap_err();
+        let err = decoder.try_decode_message().unwrap_err();
 
         assert!(matches!(
             *err,
@@ -561,8 +600,7 @@ mod tests {
         ]));
         let mut decoder = decode_state_from_bytes(bytes);
 
-        let response = decoder
-            .try_decode_response::<Dummy<Vec<u8>>>()
+        let response = consume_next_response_from_state::<Dummy<Vec<u8>>>(&mut decoder)
             .unwrap()
             .unwrap();
 
@@ -587,8 +625,7 @@ mod tests {
         let mut decoder = decode_state_from_bytes(bytes.clone());
 
         assert!(
-            decoder
-                .try_decode_response::<Dummy<Vec<u8>>>()
+            consume_next_response_from_state::<Dummy<Vec<u8>>>(&mut decoder)
                 .unwrap()
                 .is_none()
         );
@@ -596,8 +633,7 @@ mod tests {
 
         bytes.push(b'y');
         decoder.rest.extend_from_slice(&[b'y']);
-        let response = decoder
-            .try_decode_response::<Dummy<Vec<u8>>>()
+        let response = consume_next_response_from_state::<Dummy<Vec<u8>>>(&mut decoder)
             .unwrap()
             .unwrap();
 

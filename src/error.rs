@@ -324,6 +324,8 @@ impl From<Value> for Box<CallError> {
 pub enum LoopError {
     /// A Msgid could not be found in the request queue
     MsgidNotFound(u64),
+    /// Encoding or writing a message from the io loop failed.
+    EncodeError(EncodeError),
     /// Decoding a message failed.
     ///
     /// Fields:
@@ -347,6 +349,7 @@ impl Error for LoopError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match *self {
             LoopError::MsgidNotFound(_) | LoopError::InternalSendResponseError(_, _) => None,
+            LoopError::EncodeError(ref e) => Some(e),
             LoopError::DecodeError(ref e, _) => Some(e.as_ref()),
         }
     }
@@ -355,13 +358,17 @@ impl Error for LoopError {
 impl LoopError {
     #[must_use]
     pub fn is_channel_closed(&self) -> bool {
-        if let LoopError::DecodeError(ref err, _) = *self
-            && let DecodeError::ReaderError(e) = err.as_ref()
-            && e.kind() == ErrorKind::UnexpectedEof
-        {
-            return true;
+        match self {
+            Self::EncodeError(EncodeError::WriterError(e)) => e.kind() == ErrorKind::UnexpectedEof,
+            Self::EncodeError(EncodeError::BufferError(_)) => false,
+            Self::DecodeError(err, _) => {
+                matches!(
+                    err.as_ref(),
+                    DecodeError::ReaderError(e) if e.kind() == ErrorKind::UnexpectedEof
+                )
+            }
+            Self::MsgidNotFound(_) | Self::InternalSendResponseError(_, _) => false,
         }
-        false
     }
 
     #[must_use]
@@ -381,6 +388,7 @@ impl Display for LoopError {
             Self::MsgidNotFound(i) => {
                 write!(fmt, "Could not find Msgid '{i}' in the Queue")
             }
+            Self::EncodeError(ref e) => write!(fmt, "Error writing message: {e}"),
             Self::DecodeError(_, ref o) => match o {
                 None => write!(fmt, "Error reading message"),
                 Some(v) => write!(
@@ -396,6 +404,12 @@ impl Display for LoopError {
                 res
             ),
         }
+    }
+}
+
+impl From<Box<EncodeError>> for Box<LoopError> {
+    fn from(err: Box<EncodeError>) -> Box<LoopError> {
+        Box::new(LoopError::EncodeError(*err))
     }
 }
 
