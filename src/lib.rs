@@ -39,7 +39,7 @@ pub use crate::{
     exttypes::{Buffer, Tabpage, Window},
     neovim::Neovim,
     rpc::handler::Handler,
-    uioptions::{UiAttachOptions, UiOption},
+    uioptions::UiAttachOptions,
 };
 
 pub use rmpv::Value;

@@ -512,14 +512,13 @@ impl<H: Handler> Neovim<H> {
         &self,
         width: i64,
         height: i64,
-        opts: &UiAttachOptions,
+        opts: &UiAttachOptions<'_>,
     ) -> Result<(), Box<CallError>> {
         let opts = opts.to_value_map();
         let args = [width.into(), height.into(), opts];
 
-        self.call_value_ref("nvim_ui_attach", &args)
-            .await?
-            .map(|_| Ok(()))?
+        self.call_value_ref("nvim_ui_attach", &args).await??;
+        Ok(())
     }
 
     /// Send a quit command to Nvim.

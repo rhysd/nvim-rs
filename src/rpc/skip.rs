@@ -134,15 +134,11 @@ fn read_u8(input: &[u8], offset: usize) -> Result<u8, Box<DecodeError>> {
 #[inline]
 fn read_u16(input: &[u8], offset: usize) -> Result<u16, Box<DecodeError>> {
     let end = skip_bytes(input, offset, size_of::<u16>() as u32)?;
-    let mut buf = [0; 2];
-    buf.copy_from_slice(&input[offset..end]);
-    Ok(u16::from_be_bytes(buf))
+    Ok(u16::from_be_bytes(input[offset..end].try_into().unwrap()))
 }
 
 #[inline]
 fn read_u32(input: &[u8], offset: usize) -> Result<u32, Box<DecodeError>> {
     let end = skip_bytes(input, offset, size_of::<u32>() as u32)?;
-    let mut buf = [0; 4];
-    buf.copy_from_slice(&input[offset..end]);
-    Ok(u32::from_be_bytes(buf))
+    Ok(u32::from_be_bytes(input[offset..end].try_into().unwrap()))
 }

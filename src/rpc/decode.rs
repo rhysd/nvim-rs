@@ -118,13 +118,12 @@ impl DecodeState {
     {
         self.compact_rest();
 
-        match reader.read(self.read_buf.as_mut()).await {
-            Ok(0) => Err(io::Error::new(ErrorKind::UnexpectedEof, "EOF").into()),
-            Ok(n) => {
-                self.rest.extend_from_slice(&self.read_buf[..n]);
-                Ok(())
-            }
-            Err(err) => Err(err.into()),
+        let n = reader.read(self.read_buf.as_mut()).await?;
+        if n == 0 {
+            Err(io::Error::new(ErrorKind::UnexpectedEof, "EOF").into())
+        } else {
+            self.rest.extend_from_slice(&self.read_buf[..n]);
+            Ok(())
         }
     }
 

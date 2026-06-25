@@ -17,6 +17,8 @@ use rmpv::{ValueRef, decode::read_value_ref};
 
 use crate::error::{DecodeError, LoopError};
 
+use super::skip::skip_value;
+
 pub type RedrawDecodeResult<T> = Result<T, RedrawDecodeError>;
 
 #[derive(Debug)]
@@ -574,13 +576,9 @@ impl<'de> MsgpackReader<'de> {
     }
 
     fn read_str(&mut self) -> RedrawDecodeResult<&'de str> {
-        match decode::read_str_from_slice(self.remaining_slice()) {
-            Ok((value, tail)) => {
-                self.position = self.input.len() - tail.len();
-                Ok(value)
-            }
-            Err(err) => Err(err.into()),
-        }
+        let (value, tail) = decode::read_str_from_slice(self.remaining_slice())?;
+        self.position = self.input.len() - tail.len();
+        Ok(value)
     }
 
     fn read_str_eq(&mut self, expected: &str) -> RedrawDecodeResult<bool> {
@@ -703,7 +701,7 @@ impl<'de> MsgpackReader<'de> {
 
     #[inline]
     fn skip_value(&mut self) -> RedrawDecodeResult<()> {
-        let consumed = super::skip::skip_value(self.remaining_slice())?;
+        let consumed = skip_value(self.remaining_slice())?;
         self.position += consumed;
         Ok(())
     }
