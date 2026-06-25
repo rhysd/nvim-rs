@@ -2,10 +2,15 @@
 //!
 //! For most plugins, the main implementation work will consist of defining and
 //! implementing the [`handler`](crate::rpc::handler::Handler).
+pub mod decode;
+pub mod encode;
 pub mod handler;
-pub mod model;
 pub mod redraw;
+mod skip;
 pub mod unpack;
 
-pub use self::model::{IntoVal, RpcMessage};
+pub use self::{
+    decode::RpcResponse,
+    encode::{IntoVal, RpcMessage},
+};
 pub use rmpv::{Value, ValueRef};

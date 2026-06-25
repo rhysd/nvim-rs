@@ -45,6 +45,16 @@ impl From<RedrawDecodeError> for DecodeError {
     }
 }
 
+impl From<Box<DecodeError>> for RedrawDecodeError {
+    fn from(err: Box<DecodeError>) -> Self {
+        match *err {
+            DecodeError::BufferError(err) => err.into(),
+            DecodeError::ReaderError(err) => err.into(),
+            err => Self::new(err),
+        }
+    }
+}
+
 impl From<RedrawDecodeError> for Box<LoopError> {
     fn from(value: RedrawDecodeError) -> Self {
         Box::new(LoopError::DecodeError(Arc::new(value.into()), None))
@@ -691,84 +701,11 @@ impl<'de> MsgpackReader<'de> {
         }
     }
 
+    #[inline]
     fn skip_value(&mut self) -> RedrawDecodeResult<()> {
-        // Redraw payloads come from the local Neovim process and are treated as
-        // trusted input, so this skip reader intentionally does not enforce a
-        // nesting depth limit.
-        match self.read_rmp(decode::read_marker)? {
-            Marker::FixPos(_) | Marker::FixNeg(_) | Marker::Null | Marker::False | Marker::True => {
-                Ok(())
-            }
-            Marker::FixMap(len) => self.skip_map_values(u32::from(len)),
-            Marker::FixArray(len) => self.skip_values(u32::from(len)),
-            Marker::FixStr(len) => self.skip_bytes(usize::from(len)),
-            Marker::Bin8 => {
-                let len = self.read_data_u8()? as usize;
-                self.skip_bytes(len)
-            }
-            Marker::Bin16 => {
-                let len = self.read_data_u16()? as usize;
-                self.skip_bytes(len)
-            }
-            Marker::Bin32 => {
-                let len = self.read_data_u32()? as usize;
-                self.skip_bytes(len)
-            }
-            Marker::Ext8 => {
-                let len = self.read_data_u8()? as usize;
-                self.skip_ext_payload(len)
-            }
-            Marker::Ext16 => {
-                let len = self.read_data_u16()? as usize;
-                self.skip_ext_payload(len)
-            }
-            Marker::Ext32 => {
-                let len = self.read_data_u32()? as usize;
-                self.skip_ext_payload(len)
-            }
-            Marker::F32 => self.skip_bytes(size_of::<f32>()),
-            Marker::F64 => self.skip_bytes(size_of::<f64>()),
-            Marker::U8 | Marker::I8 => self.skip_bytes(size_of::<u8>()),
-            Marker::U16 | Marker::I16 => self.skip_bytes(size_of::<u16>()),
-            Marker::U32 | Marker::I32 => self.skip_bytes(size_of::<u32>()),
-            Marker::U64 | Marker::I64 => self.skip_bytes(size_of::<u64>()),
-            Marker::FixExt1 => self.skip_ext_payload(1),
-            Marker::FixExt2 => self.skip_ext_payload(2),
-            Marker::FixExt4 => self.skip_ext_payload(4),
-            Marker::FixExt8 => self.skip_ext_payload(8),
-            Marker::FixExt16 => self.skip_ext_payload(16),
-            Marker::Str8 => {
-                let len = self.read_data_u8()? as usize;
-                self.skip_bytes(len)
-            }
-            Marker::Str16 => {
-                let len = self.read_data_u16()? as usize;
-                self.skip_bytes(len)
-            }
-            Marker::Str32 => {
-                let len = self.read_data_u32()? as usize;
-                self.skip_bytes(len)
-            }
-            Marker::Array16 => {
-                let len = self.read_data_u16()? as u32;
-                self.skip_values(len)
-            }
-            Marker::Array32 => {
-                let len = self.read_data_u32()?;
-                self.skip_values(len)
-            }
-            Marker::Map16 => {
-                let len = self.read_data_u16()? as u32;
-                self.skip_map_values(len)
-            }
-            Marker::Map32 => {
-                let len = self.read_data_u32()?;
-                self.skip_map_values(len)
-            }
-            Marker::Reserved => Err(RedrawDecodeError::Invalid(
-                "reserved msgpack marker".to_owned(),
-            )),
-        }
+        let consumed = super::skip::skip_value(self.remaining_slice())?;
+        self.position += consumed;
+        Ok(())
     }
 
     #[inline]
@@ -777,14 +714,6 @@ impl<'de> MsgpackReader<'de> {
             self.skip_value()?;
         }
         Ok(())
-    }
-
-    #[inline]
-    fn skip_map_values(&mut self, len: u32) -> RedrawDecodeResult<()> {
-        let count = len.checked_mul(2).ok_or_else(|| {
-            RedrawDecodeError::Invalid("msgpack map length is too large".to_owned())
-        })?;
-        self.skip_values(count)
     }
 
     #[inline]
@@ -847,11 +776,6 @@ impl<'de> MsgpackReader<'de> {
         }
         self.position = end;
         Ok(())
-    }
-
-    #[inline]
-    fn skip_ext_payload(&mut self, data_len: usize) -> RedrawDecodeResult<()> {
-        self.skip_bytes(1 + data_len)
     }
 }
 
@@ -1672,11 +1596,6 @@ mod tests {
         let incomplete_fixstr = [Marker::FixStr(2).to_u8(), b'a'];
         let mut reader = MsgpackReader::new(&incomplete_fixstr);
         assert_reader_error_kind(reader.skip_value(), ErrorKind::UnexpectedEof);
-
-        let mut map32_too_large = vec![Marker::Map32.to_u8()];
-        push_u32(&mut map32_too_large, u32::MAX);
-        let mut reader = MsgpackReader::new(&map32_too_large);
-        assert_reader_error_kind(reader.skip_value(), ErrorKind::InvalidData);
     }
 
     #[test]

@@ -2,29 +2,15 @@
 //! functionality.
 use std::{env, error::Error, fs};
 
-use rmpv::Value;
-
 use tokio::fs::File as TokioFile;
 
-use navy_nvim_rs::{Handler, Neovim, create, rpc::IntoVal};
+use navy_nvim_rs::{Handler, create, rpc::IntoVal};
 
 #[derive(Clone)]
 struct NeovimHandler {}
 
 impl Handler for NeovimHandler {
     type Writer = TokioFile;
-
-    async fn handle_request(
-        &self,
-        name: String,
-        _args: Vec<Value>,
-        _neovim: Neovim<TokioFile>,
-    ) -> Result<Value, Value> {
-        match name.as_ref() {
-            "ping" => Ok(Value::from("pong")),
-            _ => unimplemented!(),
-        }
-    }
 }
 
 #[tokio::main]

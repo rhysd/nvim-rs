@@ -16,12 +16,11 @@ use tokio::sync::{
 };
 
 use crate::{
-    create::Spawner,
     error::{CallError, DecodeError, EncodeError, HandshakeError, LoopError},
     rpc::{
+        decode::{DecodeState, IncomingMessage, RpcResponse},
+        encode::{self, EncodeState, IntoVal, MessageType, RpcMessage},
         handler::Handler,
-        model,
-        model::{IntoVal, MessageType, RpcMessage},
         redraw::{RedrawDecodeError, RedrawFrame, RedrawFrameInfo},
     },
     uioptions::UiAttachOptions,
@@ -47,17 +46,22 @@ type ResponseResult = Result<Result<Value, Value>, Arc<DecodeError>>;
 type Queue = SyncMutex<Vec<(u64, oneshot::Sender<ResponseResult>)>>;
 
 enum HandlerMessage {
-    RpcMessage(RpcMessage),
+    Response(RpcResponse),
     RedrawPayload(RedrawFrame),
+    UnknownRequest { msgid: u64 },
 }
 
 impl std::fmt::Debug for HandlerMessage {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::RpcMessage(msg) => fmt.debug_tuple("RpcMessage").field(msg).finish(),
+            Self::Response(response) => fmt.debug_tuple("Response").field(response).finish(),
             Self::RedrawPayload(frame) => fmt
                 .debug_struct("RedrawPayload")
                 .field("len", &frame.consumed())
+                .finish(),
+            Self::UnknownRequest { msgid } => fmt
+                .debug_struct("UnknownRequest")
+                .field("msgid", msgid)
                 .finish(),
         }
     }
@@ -68,22 +72,16 @@ pub(crate) struct NeovimInner<W>
 where
     W: AsyncWrite + Send + Unpin + 'static,
 {
-    writer: Mutex<model::EncodeState<W>>,
+    writer: Mutex<EncodeState<W>>,
     queue: Queue,
     msgid_counter: AtomicU64,
 }
 
-pub struct Neovim<W>
-where
-    W: AsyncWrite + Send + Unpin + 'static,
-{
-    pub(crate) inner: Arc<NeovimInner<W>>,
+pub struct Neovim<H: Handler> {
+    pub(crate) inner: Arc<NeovimInner<H::Writer>>,
 }
 
-impl<W> Clone for Neovim<W>
-where
-    W: AsyncWrite + Send + Unpin + 'static,
-{
+impl<H: Handler> Clone for Neovim<H> {
     fn clone(&self) -> Self {
         Neovim {
             inner: self.inner.clone(),
@@ -91,36 +89,26 @@ where
     }
 }
 
-impl<W> PartialEq for Neovim<W>
-where
-    W: AsyncWrite + Send + Unpin + 'static,
-{
+impl<H: Handler> PartialEq for Neovim<H> {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
-impl<W> Eq for Neovim<W> where W: AsyncWrite + Send + Unpin + 'static {}
+impl<H: Handler> Eq for Neovim<H> {}
 
-impl<W> Neovim<W>
-where
-    W: AsyncWrite + Send + Unpin + 'static,
-{
+impl<H: Handler> Neovim<H> {
     #[allow(clippy::new_ret_no_self)]
-    pub fn new<H, R>(
+    pub fn new<R>(
         reader: R,
-        writer: W,
+        writer: H::Writer,
         handler: H,
-    ) -> (
-        Neovim<<H as Handler>::Writer>,
-        impl Future<Output = Result<(), Box<LoopError>>>,
-    )
+    ) -> (Self, impl Future<Output = Result<(), Box<LoopError>>>)
     where
         R: AsyncRead + Send + Unpin + 'static,
-        H: Handler<Writer = W> + Spawner,
     {
         let req = Neovim {
             inner: Arc::new(NeovimInner {
-                writer: Mutex::new(model::EncodeState::new(writer)),
+                writer: Mutex::new(EncodeState::new(writer)),
                 queue: SyncMutex::new(Vec::new()),
                 msgid_counter: AtomicU64::new(0),
             }),
@@ -148,25 +136,24 @@ where
     /// stdout. Due to the way Neovim packs strings, the length has to be either
     /// less than 20 characters or more than 31 characters long.
     /// See https://github.com/neovim/neovim/issues/32784 for more information.
-    pub async fn handshake<H, R>(
+    pub async fn handshake<R>(
         mut reader: R,
-        writer: W,
+        writer: H::Writer,
         handler: H,
         message: &str,
     ) -> Result<
         (
-            Neovim<<H as Handler>::Writer>,
-            impl Future<Output = Result<(), Box<LoopError>>> + use<H, R, W>,
+            Self,
+            impl Future<Output = Result<(), Box<LoopError>>> + use<H, R>,
         ),
         Box<HandshakeError>,
     >
     where
         R: AsyncRead + Send + Unpin + 'static,
-        H: Handler<Writer = W> + Spawner,
     {
         let instance = Neovim {
             inner: Arc::new(NeovimInner {
-                writer: Mutex::new(model::EncodeState::new(writer)),
+                writer: Mutex::new(EncodeState::new(writer)),
                 queue: SyncMutex::new(Vec::new()),
                 msgid_counter: AtomicU64::new(0),
             }),
@@ -187,7 +174,7 @@ where
             method: "nvim_exec_lua".to_owned(),
             params: call_args![format!("return '{message}'"), Vec::<Value>::new()],
         };
-        model::encode_to_state(&instance.inner.writer, req).await?;
+        encode::encode_to_state(&instance.inner.writer, req).await?;
 
         let expected_resp = RpcMessage::RpcResponse {
             msgid,
@@ -195,7 +182,7 @@ where
             result: rmpv::Value::String(message.into()),
         };
         let mut expected_data = Vec::new();
-        model::encode_sync(&mut expected_data, expected_resp)
+        encode::encode_sync(&mut expected_data, expected_resp)
             .expect("Encoding static data can't fail");
         let mut actual_data = Vec::new();
         let mut start = 0;
@@ -259,7 +246,7 @@ where
 
         self.inner.queue.lock().push((msgid, sender));
 
-        model::encode_to_state(&self.inner.writer, req).await?;
+        encode::encode_to_state(&self.inner.writer, req).await?;
 
         Ok(receiver)
     }
@@ -274,7 +261,7 @@ where
 
         self.inner.queue.lock().push((msgid, sender));
 
-        model::encode_single_string_arg_msg_to_state(
+        encode::encode_single_string_arg_msg_to_state(
             &self.inner.writer,
             MessageType::Request(msgid),
             method,
@@ -295,7 +282,7 @@ where
 
         self.inner.queue.lock().push((msgid, sender));
 
-        model::encode_value_ref_to_state(
+        encode::encode_value_ref_to_state(
             &self.inner.writer,
             MessageType::Request(msgid),
             method,
@@ -338,7 +325,7 @@ where
         method: &str,
         arg: &str,
     ) -> Result<(), Box<CallError>> {
-        model::encode_single_string_arg_msg_to_state(
+        encode::encode_single_string_arg_msg_to_state(
             &self.inner.writer,
             MessageType::Notification,
             method,
@@ -366,7 +353,7 @@ where
         method: &str,
         args: &[ValueRef<'_>],
     ) -> Result<(), Box<CallError>> {
-        model::encode_value_ref_to_state(
+        encode::encode_value_ref_to_state(
             &self.inner.writer,
             MessageType::Notification,
             method,
@@ -379,9 +366,9 @@ where
     async fn send_error_to_callers(
         &self,
         queue: &Queue,
-        err: DecodeError,
+        err: Box<DecodeError>,
     ) -> Result<Arc<DecodeError>, Box<LoopError>> {
-        let err = Arc::new(err);
+        let err: Arc<DecodeError> = Arc::from(err);
         let mut v: Vec<u64> = vec![];
 
         let mut queue = queue.lock();
@@ -400,76 +387,34 @@ where
         }
     }
 
-    async fn handler_loop<H>(
+    async fn handler_loop(
         self,
         handler: H,
-        mut receiver: UnboundedReceiver<HandlerMessage>,
-    ) -> Result<(), Box<LoopError>>
-    where
-        H: Handler<Writer = W> + Spawner,
-    {
+        mut receiver: UnboundedReceiver<RedrawFrame>,
+    ) -> Result<(), Box<LoopError>> {
         loop {
-            let msg = match receiver.recv().await {
-                Some(msg) => msg,
+            let Some(msg) = receiver.recv().await else {
                 /* If our receiver closes, that just means that io_handler started
                  * shutting down. This is normal, so shut down along with it and don't
                  * report an error
                  */
-                None => break Ok(()),
+                break Ok(());
             };
 
-            match msg {
-                HandlerMessage::RedrawPayload(frame) => {
-                    let redraw = frame.notification()?;
-                    handler.handle_redraw(redraw)?;
-                }
-                HandlerMessage::RpcMessage(msg) => match msg {
-                    RpcMessage::RpcRequest {
-                        msgid,
-                        method,
-                        params,
-                    } => {
-                        let handler_c = handler.clone();
-                        let neovim = self.clone();
-                        let inner = self.inner.clone();
-
-                        handler.spawn(async move {
-                            let response =
-                                match handler_c.handle_request(method, params, neovim).await {
-                                    Ok(result) => RpcMessage::RpcResponse {
-                                        msgid,
-                                        result,
-                                        error: Value::Nil,
-                                    },
-                                    Err(error) => RpcMessage::RpcResponse {
-                                        msgid,
-                                        result: Value::Nil,
-                                        error,
-                                    },
-                                };
-
-                            let _ = model::encode_to_state(&inner.writer, response).await;
-                        });
-                    }
-                    RpcMessage::RpcNotification { method, params } => {
-                        let neovim = self.clone();
-                        handler.handle_notify(method, params, neovim).await;
-                    }
-                    RpcMessage::RpcResponse { .. } => unreachable!(),
-                },
-            }
+            let redraw = msg.notification()?;
+            handler.handle_redraw(redraw)?;
         }
     }
 
     async fn io_loop<R>(
         self,
         mut reader: R,
-        sender: UnboundedSender<HandlerMessage>,
+        sender: UnboundedSender<RedrawFrame>,
     ) -> Result<(), Box<LoopError>>
     where
         R: AsyncRead + Send + Unpin + 'static,
     {
-        let mut decoder = model::DecodeState::new();
+        let mut decoder = DecodeState::new();
 
         loop {
             let msg = match Self::decode_next(&mut decoder, &mut reader).await {
@@ -481,34 +426,41 @@ where
             };
 
             match msg {
-                HandlerMessage::RpcMessage(RpcMessage::RpcResponse {
+                HandlerMessage::RedrawPayload(frame) => {
+                    // Send redraw notifications to handler_loop().
+                    sender.send(frame).unwrap();
+                }
+                HandlerMessage::UnknownRequest { msgid } => {
+                    encode::encode_error_response_to_state(
+                        &self.inner.writer,
+                        msgid,
+                        "Not implemented",
+                    )
+                    .await?;
+                }
+                HandlerMessage::Response(RpcResponse {
                     msgid,
                     result,
                     error,
                 }) => {
                     let sender = find_sender(&self.inner.queue, msgid)?;
-                    if error == Value::Nil {
-                        sender
-                            .send(Ok(Ok(result)))
-                            .map_err(|r| (msgid, r.expect("This was an OK(_)")))?;
+                    let response = if error == Value::Nil {
+                        Ok(result)
                     } else {
-                        sender
-                            .send(Ok(Err(error)))
-                            .map_err(|r| (msgid, r.expect("This was an OK(_)")))?;
+                        Err(error)
+                    };
+                    if let Err(Ok(response)) = sender.send(Ok(response)) {
+                        return Err((msgid, response).into());
                     }
-                }
-                msg => {
-                    // Send message to handler_loop()
-                    sender.send(msg).unwrap();
                 }
             }
         }
     }
 
     async fn decode_next<R>(
-        decoder: &mut model::DecodeState,
+        decoder: &mut DecodeState,
         reader: &mut R,
-    ) -> Result<HandlerMessage, DecodeError>
+    ) -> Result<HandlerMessage, Box<DecodeError>>
     where
         R: AsyncRead + Send + Unpin + 'static,
     {
@@ -521,16 +473,35 @@ where
                         return Ok(HandlerMessage::RedrawPayload(frame));
                     }
                     Ok(None) => {
-                        if let Some(msg) = decoder.try_decode_message().map_err(|err| *err)? {
-                            return Ok(HandlerMessage::RpcMessage(msg));
+                        if let Some(decoded) = decoder.try_decode_message()? {
+                            let msg = match decoded.message {
+                                IncomingMessage::Response(response) => {
+                                    Some(HandlerMessage::Response(response))
+                                }
+                                IncomingMessage::Request { msgid, method } => {
+                                    H::handle_unknown_request(msgid, method);
+                                    Some(HandlerMessage::UnknownRequest { msgid })
+                                }
+                                IncomingMessage::Notification { method } => {
+                                    H::handle_unknown_notify(method);
+                                    None
+                                }
+                            };
+
+                            decoder.consume(decoded.consumed);
+
+                            if let Some(msg) = msg {
+                                return Ok(msg);
+                            }
+                            continue;
                         }
                     }
                     Err(RedrawDecodeError::Incomplete) => {}
-                    Err(err) => return Err(err.into()),
+                    Err(err) => return Err(Box::new(err.into())),
                 }
             }
 
-            decoder.read_next_chunk(reader).await.map_err(|err| *err)?;
+            decoder.read_next_chunk(reader).await?;
         }
     }
 
@@ -608,12 +579,19 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::rpc::redraw::{RedrawDecodeResult, RedrawNotification};
+    use crate::rpc::{
+        handler::Dummy,
+        redraw::{RedrawDecodeResult, RedrawNotification},
+    };
 
     #[derive(Clone)]
     struct CountingHandler {
         redraw_count: Arc<AtomicUsize>,
     }
+
+    static UNKNOWN_REQUEST_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static UNKNOWN_NOTIFICATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static UNKNOWN_REQUEST_MSGID: AtomicU64 = AtomicU64::new(0);
 
     impl Handler for CountingHandler {
         type Writer = Vec<u8>;
@@ -626,6 +604,17 @@ mod tests {
             })?;
             self.redraw_count.fetch_add(1, Ordering::Relaxed);
             Ok(())
+        }
+
+        fn handle_unknown_notify(name: &str) {
+            assert_eq!(name, "ignored");
+            UNKNOWN_NOTIFICATION_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn handle_unknown_request(msgid: u64, name: &str) {
+            assert_eq!(name, "ignored");
+            UNKNOWN_REQUEST_MSGID.store(msgid, Ordering::Relaxed);
+            UNKNOWN_REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -643,14 +632,115 @@ mod tests {
         ]))
     }
 
-    fn test_neovim() -> Neovim<Vec<u8>> {
+    fn ignored_request_bytes() -> Vec<u8> {
+        encoded_value(Value::from(vec![
+            Value::from(0),
+            Value::from(99),
+            Value::from("ignored"),
+            Value::from(Vec::<Value>::new()),
+        ]))
+    }
+
+    fn ignored_notification_bytes() -> Vec<u8> {
+        encoded_value(Value::from(vec![
+            Value::from(2),
+            Value::from("ignored"),
+            Value::from(Vec::<Value>::new()),
+        ]))
+    }
+
+    fn response_bytes(msgid: u64, result: Value, error: Value) -> Vec<u8> {
+        encoded_value(Value::from(vec![
+            Value::from(1),
+            Value::from(msgid),
+            error,
+            result,
+        ]))
+    }
+
+    fn test_neovim<H>() -> Neovim<H>
+    where
+        H: Handler<Writer = Vec<u8>>,
+    {
         Neovim {
             inner: Arc::new(NeovimInner {
-                writer: Mutex::new(model::EncodeState::new(Vec::new())),
+                writer: Mutex::new(EncodeState::new(Vec::new())),
                 queue: SyncMutex::new(Vec::new()),
                 msgid_counter: AtomicU64::new(0),
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn decode_next_reports_incoming_requests_and_ignores_notifications() {
+        UNKNOWN_REQUEST_COUNT.store(0, Ordering::Relaxed);
+        UNKNOWN_NOTIFICATION_COUNT.store(0, Ordering::Relaxed);
+        UNKNOWN_REQUEST_MSGID.store(0, Ordering::Relaxed);
+
+        let result = Value::from("ok");
+        let response = response_bytes(7, result.clone(), Value::Nil);
+        let mut bytes = ignored_request_bytes();
+        bytes.extend_from_slice(&ignored_notification_bytes());
+        bytes.extend_from_slice(&response);
+
+        let mut decoder = DecodeState::new();
+        let mut reader = Cursor::new(bytes);
+
+        let msg = Neovim::<CountingHandler>::decode_next(&mut decoder, &mut reader)
+            .await
+            .unwrap();
+
+        match msg {
+            HandlerMessage::UnknownRequest { msgid } => {
+                assert_eq!(msgid, 99);
+            }
+            msg => panic!("unexpected message: {msg:?}"),
+        }
+
+        assert_eq!(UNKNOWN_REQUEST_COUNT.load(Ordering::Relaxed), 1);
+        assert_eq!(UNKNOWN_NOTIFICATION_COUNT.load(Ordering::Relaxed), 0);
+        assert_eq!(UNKNOWN_REQUEST_MSGID.load(Ordering::Relaxed), 99);
+
+        let msg = Neovim::<CountingHandler>::decode_next(&mut decoder, &mut reader)
+            .await
+            .unwrap();
+
+        match msg {
+            HandlerMessage::Response(RpcResponse {
+                msgid,
+                result: decoded_result,
+                error,
+            }) => {
+                assert_eq!(msgid, 7);
+                assert_eq!(decoded_result, result);
+                assert_eq!(error, Value::Nil);
+            }
+            msg => panic!("unexpected message: {msg:?}"),
+        }
+
+        assert_eq!(UNKNOWN_REQUEST_COUNT.load(Ordering::Relaxed), 1);
+        assert_eq!(UNKNOWN_NOTIFICATION_COUNT.load(Ordering::Relaxed), 1);
+        assert_eq!(UNKNOWN_REQUEST_MSGID.load(Ordering::Relaxed), 99);
+    }
+
+    #[tokio::test]
+    async fn io_loop_replies_to_incoming_unknown_request_with_default_error() {
+        let nvim = test_neovim::<Dummy<Vec<u8>>>();
+        let inner = nvim.inner.clone();
+        let (sender, _receiver) = unbounded_channel();
+
+        let err = nvim
+            .io_loop(Cursor::new(ignored_request_bytes()), sender)
+            .await
+            .unwrap_err();
+
+        assert!(err.is_channel_closed());
+
+        let writer = inner.writer.lock().await;
+        assert_eq!(
+            writer.writer(),
+            &response_bytes(99, Value::Nil, Value::from("Not implemented"))
+        );
     }
 
     #[tokio::test]
@@ -660,9 +750,11 @@ mod tests {
 
         assert!(redraw.starts_with(&prefix));
 
-        let mut decoder = model::DecodeState::with_rest(prefix.to_vec());
+        let mut decoder = DecodeState::new();
+        let mut prefix_reader = Cursor::new(prefix.to_vec());
+        decoder.read_next_chunk(&mut prefix_reader).await.unwrap();
         let mut reader = Cursor::new(redraw[prefix.len()..].to_vec());
-        let msg = Neovim::<Vec<u8>>::decode_next(&mut decoder, &mut reader)
+        let msg = Neovim::<CountingHandler>::decode_next(&mut decoder, &mut reader)
             .await
             .unwrap();
 
@@ -683,17 +775,20 @@ mod tests {
         };
 
         let frame = RedrawFrame::from_slice(&redraw_bytes()).unwrap();
-        sender.send(HandlerMessage::RedrawPayload(frame)).unwrap();
+        sender.send(frame).unwrap();
         drop(sender);
 
-        test_neovim().handler_loop(handler, receiver).await.unwrap();
+        test_neovim::<CountingHandler>()
+            .handler_loop(handler, receiver)
+            .await
+            .unwrap();
 
         assert_eq!(redraw_count.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
     async fn notify_value_ref_writes_notification_without_queueing_request() {
-        let nvim = test_neovim();
+        let nvim = test_neovim::<CountingHandler>();
 
         nvim.notify_value_ref("nvim_ui_set_focus", &[ValueRef::Boolean(true)])
             .await

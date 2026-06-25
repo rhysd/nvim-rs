@@ -1,24 +1,16 @@
-//! Handling notifications and request received from neovim
+//! Handling redraw notifications received from neovim
 //!
-//! The core of a plugin is defining and implementing the
-//! [`handler`](crate::rpc::handler::Handler).
-use std::{future::Future, marker::PhantomData, sync::Arc};
+//! The core of a UI client is defining and implementing the
+//! [`Handler`].
+use std::{marker::PhantomData, sync::Arc};
 
-use rmpv::Value;
 use tokio::io::AsyncWrite;
 
-use crate::{
-    Neovim,
-    rpc::redraw::{RedrawDecodeResult, RedrawNotification},
-};
+use crate::rpc::redraw::{RedrawDecodeResult, RedrawNotification};
 
-/// The central functionality of a plugin. The trait bounds asure that each
-/// asynchronous task can receive a copy of the handler, so some state can be
-/// shared.
+/// The central functionality of a UI client.
 pub trait Handler: Send + Sync + Clone + 'static {
-    /// The type where we write our responses to requests. Handling of incoming
-    /// requests/notifications is done on the io loop, which passes the parsed
-    /// messages to the handler.
+    /// The type used for writing requests and notifications to Neovim.
     type Writer: AsyncWrite + Send + Unpin + 'static;
 
     /// Handling a `redraw` notification on the handler loop without allocating
@@ -27,34 +19,15 @@ pub trait Handler: Send + Sync + Clone + 'static {
         Ok(())
     }
 
-    /// Handling an rpc request. The ID's of requests are handled by the
-    /// [`neovim`](crate::neovim::Neovim) instance.
-    fn handle_request(
-        &self,
-        _name: String,
-        _args: Vec<Value>,
-        _neovim: Neovim<Self::Writer>,
-    ) -> impl Future<Output = Result<Value, Value>> + Send {
-        async { Err(Value::from("Not implemented")) }
-    }
+    fn handle_unknown_notify(_name: &str) {}
 
-    /// Handling an rpc notification. Notifications are handled one at a time in
-    /// the order in which they were received, and will block new requests from
-    /// being received until handle_notify returns.
-    fn handle_notify(
-        &self,
-        _name: String,
-        _args: Vec<Value>,
-        _neovim: Neovim<<Self as Handler>::Writer>,
-    ) -> impl Future<Output = ()> + Send {
-        async {}
-    }
+    fn handle_unknown_request(_msgid: u64, _name: &str) {}
 }
 
-/// The dummy handler defaults to doing nothing with a notification, and
-/// returning a generic error for a request. It can be used if a plugin only
-/// wants to send requests to neovim and get responses, but not handle any
-/// notifications or requests.
+/// The dummy handler ignores redraw notifications.
+///
+/// It can be used if a client only wants to send requests to Neovim and get
+/// responses.
 #[derive(Default)]
 pub struct Dummy<Q>
 where

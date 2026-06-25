@@ -5,7 +5,6 @@
 //! OS.
 //!
 //! API functions should be run from inside the tokio runtime.
-use core::future::Future;
 use std::{
     fs::File,
     io::{self, Error},
@@ -22,52 +21,18 @@ use tokio::{
     task::JoinHandle,
 };
 
-#[cfg(unix)]
-type Connection = tokio::net::UnixStream;
-#[cfg(windows)]
-type Connection = tokio::net::windows::named_pipe::NamedPipeClient;
-
-type SpawnedChild = (
-    Neovim<ChildStdin>,
-    JoinHandle<Result<(), Box<LoopError>>>,
-    Child,
-);
-
 use crate::{
     error::{HandshakeError, LoopError},
     neovim::Neovim,
     rpc::handler::Handler,
 };
 
-/// A task to generalize spawning a future that returns `()`.
-///
-/// This is automatically implemented on your
-/// [`Handler`](crate::rpc::handler::Handler) using the appropriate runtime.
-///
-/// If you have a runtime that brings appropriate types, you can implement this
-/// on your [`Handler`](crate::rpc::handler::Handler) and use
-/// [`Neovim::new`](crate::neovim::Neovim::new) to connect to neovim.
-pub trait Spawner: Handler {
-    type Handle;
+#[cfg(unix)]
+type Connection = tokio::net::UnixStream;
+#[cfg(windows)]
+type Connection = tokio::net::windows::named_pipe::NamedPipeClient;
 
-    fn spawn<Fut>(&self, future: Fut) -> Self::Handle
-    where
-        Fut: Future<Output = ()> + Send + 'static;
-}
-
-impl<H> Spawner for H
-where
-    H: Handler,
-{
-    type Handle = JoinHandle<()>;
-
-    fn spawn<Fut>(&self, future: Fut) -> Self::Handle
-    where
-        Fut: Future<Output = ()> + Send + 'static,
-    {
-        spawn(future)
-    }
-}
+type SpawnedChild<H> = (Neovim<H>, JoinHandle<Result<(), Box<LoopError>>>, Child);
 
 /// Create a std::io::File for stdout, which is not line-buffered, as
 /// opposed to std::io::Stdout.
@@ -90,17 +55,14 @@ fn unbuffered_stdout() -> io::Result<File> {
 pub async fn new_tcp<A, H>(
     addr: A,
     handler: H,
-) -> io::Result<(
-    Neovim<WriteHalf<TcpStream>>,
-    JoinHandle<Result<(), Box<LoopError>>>,
-)>
+) -> io::Result<(Neovim<H>, JoinHandle<Result<(), Box<LoopError>>>)>
 where
     H: Handler<Writer = WriteHalf<TcpStream>>,
     A: ToSocketAddrs,
 {
     let stream = TcpStream::connect(addr).await?;
     let (reader, writer) = split(stream);
-    let (neovim, io) = Neovim::<WriteHalf<TcpStream>>::new(reader, writer, handler);
+    let (neovim, io) = Neovim::new(reader, writer, handler);
     let io_handle = spawn(io);
 
     Ok((neovim, io_handle))
@@ -110,10 +72,7 @@ where
 pub async fn new_path<H, P: AsRef<Path> + Clone>(
     path: P,
     handler: H,
-) -> io::Result<(
-    Neovim<WriteHalf<Connection>>,
-    JoinHandle<Result<(), Box<LoopError>>>,
-)>
+) -> io::Result<(Neovim<H>, JoinHandle<Result<(), Box<LoopError>>>)>
 where
     H: Handler<Writer = WriteHalf<Connection>> + Send + 'static,
 {
@@ -148,14 +107,14 @@ where
         }
     };
     let (reader, writer) = split(stream);
-    let (neovim, io) = Neovim::<WriteHalf<Connection>>::new(reader, writer, handler);
+    let (neovim, io) = Neovim::new(reader, writer, handler);
     let io_handle = spawn(io);
 
     Ok((neovim, io_handle))
 }
 
 /// Connect to a neovim instance by spawning a new one
-pub async fn new_child<H>(handler: H) -> io::Result<SpawnedChild>
+pub async fn new_child<H>(handler: H) -> io::Result<SpawnedChild<H>>
 where
     H: Handler<Writer = ChildStdin> + Send + 'static,
 {
@@ -167,7 +126,10 @@ where
 }
 
 /// Connect to a neovim instance by spawning a new one
-pub async fn new_child_path<H, S: AsRef<Path>>(program: S, handler: H) -> io::Result<SpawnedChild>
+pub async fn new_child_path<H, S: AsRef<Path>>(
+    program: S,
+    handler: H,
+) -> io::Result<SpawnedChild<H>>
 where
     H: Handler<Writer = ChildStdin> + Send + 'static,
 {
@@ -179,7 +141,7 @@ where
 /// Connect to a neovim instance by spawning a new one
 ///
 /// stdin/stdout will be rewritten to `Stdio::piped()`
-pub fn new_child_cmd<H>(mut cmd: Command, handler: H) -> io::Result<SpawnedChild>
+pub fn new_child_cmd<H>(mut cmd: Command, handler: H) -> io::Result<SpawnedChild<H>>
 where
     H: Handler<Writer = ChildStdin> + Send + 'static,
 {
@@ -193,7 +155,7 @@ where
         .take()
         .ok_or_else(|| Error::other("Can't open stdin"))?;
 
-    let (neovim, io) = Neovim::<ChildStdin>::new(stdout, stdin, handler);
+    let (neovim, io) = Neovim::new(stdout, stdin, handler);
     let io_handle = spawn(io);
 
     Ok((neovim, io_handle, child))
@@ -202,19 +164,13 @@ where
 /// Connect to the neovim instance that spawned this process over stdin/stdout
 pub async fn new_parent<H>(
     handler: H,
-) -> Result<
-    (
-        Neovim<tokio::fs::File>,
-        JoinHandle<Result<(), Box<LoopError>>>,
-    ),
-    Error,
->
+) -> Result<(Neovim<H>, JoinHandle<Result<(), Box<LoopError>>>), Error>
 where
     H: Handler<Writer = tokio::fs::File>,
 {
     let sout = TokioFile::from_std(unbuffered_stdout()?);
 
-    let (neovim, io) = Neovim::<tokio::fs::File>::new(stdin(), sout, handler);
+    let (neovim, io) = Neovim::new(stdin(), sout, handler);
     let io_handle = spawn(io);
 
     Ok((neovim, io_handle))
@@ -232,7 +188,7 @@ pub async fn new_child_handshake_cmd<H>(
     cmd: &mut Command,
     handler: H,
     message: &str,
-) -> Result<SpawnedChild, Box<HandshakeError>>
+) -> Result<SpawnedChild<H>, Box<HandshakeError>>
 where
     H: Handler<Writer = ChildStdin> + Send + 'static,
 {
@@ -246,7 +202,7 @@ where
         .take()
         .ok_or_else(|| Error::other("Can't open stdin"))?;
 
-    let (neovim, io) = Neovim::<ChildStdin>::handshake(stdout, stdin, handler, message).await?;
+    let (neovim, io) = Neovim::handshake(stdout, stdin, handler, message).await?;
     let io_handle = spawn(io);
 
     Ok((neovim, io_handle, child))

@@ -1,19 +1,15 @@
 //! Some manually implemented API functions
 use rmpv::{Value, ValueRef};
-use tokio::io::AsyncWrite;
 
 use crate::{
     Buffer, Tabpage, Window,
     error::CallError,
     neovim::Neovim,
-    rpc::{model::IntoVal, unpack::TryUnpack},
+    rpc::{encode::IntoVal, handler::Handler, unpack::TryUnpack},
 };
 
-impl<W> Neovim<W>
-where
-    W: AsyncWrite + Send + Unpin + 'static,
-{
-    pub async fn list_bufs(&self) -> Result<Vec<Buffer<W>>, Box<CallError>> {
+impl<H: Handler> Neovim<H> {
+    pub async fn list_bufs(&self) -> Result<Vec<Buffer<H>>, Box<CallError>> {
         match self.call("nvim_list_bufs", call_args![]).await?? {
             Value::Array(arr) => Ok(arr
                 .into_iter()
@@ -23,14 +19,14 @@ where
         }
     }
 
-    pub async fn get_current_buf(&self) -> Result<Buffer<W>, Box<CallError>> {
+    pub async fn get_current_buf(&self) -> Result<Buffer<H>, Box<CallError>> {
         Ok(self
             .call("nvim_get_current_buf", call_args![])
             .await?
             .map(|val| Buffer::new(val, self.clone()))?)
     }
 
-    pub async fn list_wins(&self) -> Result<Vec<Window<W>>, Box<CallError>> {
+    pub async fn list_wins(&self) -> Result<Vec<Window<H>>, Box<CallError>> {
         match self.call("nvim_list_wins", call_args![]).await?? {
             Value::Array(arr) => Ok(arr
                 .into_iter()
@@ -40,7 +36,7 @@ where
         }
     }
 
-    pub async fn get_current_win(&self) -> Result<Window<W>, Box<CallError>> {
+    pub async fn get_current_win(&self) -> Result<Window<H>, Box<CallError>> {
         Ok(self
             .call("nvim_get_current_win", call_args![])
             .await?
@@ -51,7 +47,7 @@ where
         &self,
         listed: bool,
         scratch: bool,
-    ) -> Result<Buffer<W>, Box<CallError>> {
+    ) -> Result<Buffer<H>, Box<CallError>> {
         Ok(self
             .call("nvim_create_buf", call_args![listed, scratch])
             .await?
@@ -60,17 +56,17 @@ where
 
     pub async fn open_win(
         &self,
-        buffer: &Buffer<W>,
+        buffer: &Buffer<H>,
         enter: bool,
         config: Vec<(Value, Value)>,
-    ) -> Result<Window<W>, Box<CallError>> {
+    ) -> Result<Window<H>, Box<CallError>> {
         Ok(self
             .call("nvim_open_win", call_args![buffer, enter, config])
             .await?
             .map(|val| Window::new(val, self.clone()))?)
     }
 
-    pub async fn list_tabpages(&self) -> Result<Vec<Tabpage<W>>, Box<CallError>> {
+    pub async fn list_tabpages(&self) -> Result<Vec<Tabpage<H>>, Box<CallError>> {
         match self.call("nvim_list_tabpages", call_args![]).await?? {
             Value::Array(arr) => Ok(arr
                 .into_iter()
@@ -80,7 +76,7 @@ where
         }
     }
 
-    pub async fn get_current_tabpage(&self) -> Result<Tabpage<W>, Box<CallError>> {
+    pub async fn get_current_tabpage(&self) -> Result<Tabpage<H>, Box<CallError>> {
         Ok(self
             .call("nvim_get_current_tabpage", call_args![])
             .await?

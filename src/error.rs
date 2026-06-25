@@ -25,7 +25,7 @@
 //!
 //! Use [`is_reader_error`](crate::error::LoopError::is_reader_error)
 //! to check if it might sense to try to show an error message to the neovim
-//! user (see [this example](crate::examples::scorched_earth)).
+//! user.
 //!
 //! Use
 //! [`CallError::is_channel_closed`](crate::error::CallError::is_channel_closed)
@@ -33,8 +33,8 @@
 //! [`LoopError::is_channel_closed`](crate::error::LoopError::is_channel_closed)
 //! to determine if the error originates from a closed channel. This means
 //! either neovim closed the channel actively, or neovim was closed. Often, this
-//! is not seen as a real error, but the signal for the plugin to quit. Again,
-//! see the [example](crate::examples::scorched_earth).
+//! is not seen as a real error, but the signal for the plugin to quit. See the
+//! [quitting example](crate::examples::quitting).
 use std::{error::Error, fmt, fmt::Display, io, io::ErrorKind, ops::RangeInclusive, sync::Arc};
 
 use rmpv::{Value, decode::Error as RmpvDecodeError, encode::Error as RmpvEncodeError};
@@ -324,6 +324,8 @@ impl From<Value> for Box<CallError> {
 pub enum LoopError {
     /// A Msgid could not be found in the request queue
     MsgidNotFound(u64),
+    /// Encoding or writing a message from the io loop failed.
+    EncodeError(EncodeError),
     /// Decoding a message failed.
     ///
     /// Fields:
@@ -347,6 +349,7 @@ impl Error for LoopError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match *self {
             LoopError::MsgidNotFound(_) | LoopError::InternalSendResponseError(_, _) => None,
+            LoopError::EncodeError(ref e) => Some(e),
             LoopError::DecodeError(ref e, _) => Some(e.as_ref()),
         }
     }
@@ -355,13 +358,17 @@ impl Error for LoopError {
 impl LoopError {
     #[must_use]
     pub fn is_channel_closed(&self) -> bool {
-        if let LoopError::DecodeError(ref err, _) = *self
-            && let DecodeError::ReaderError(e) = err.as_ref()
-            && e.kind() == ErrorKind::UnexpectedEof
-        {
-            return true;
+        match self {
+            Self::EncodeError(EncodeError::WriterError(e)) => e.kind() == ErrorKind::UnexpectedEof,
+            Self::EncodeError(EncodeError::BufferError(_)) => false,
+            Self::DecodeError(err, _) => {
+                matches!(
+                    err.as_ref(),
+                    DecodeError::ReaderError(e) if e.kind() == ErrorKind::UnexpectedEof
+                )
+            }
+            Self::MsgidNotFound(_) | Self::InternalSendResponseError(_, _) => false,
         }
-        false
     }
 
     #[must_use]
@@ -381,6 +388,7 @@ impl Display for LoopError {
             Self::MsgidNotFound(i) => {
                 write!(fmt, "Could not find Msgid '{i}' in the Queue")
             }
+            Self::EncodeError(ref e) => write!(fmt, "Error writing message: {e}"),
             Self::DecodeError(_, ref o) => match o {
                 None => write!(fmt, "Error reading message"),
                 Some(v) => write!(
@@ -396,6 +404,12 @@ impl Display for LoopError {
                 res
             ),
         }
+    }
+}
+
+impl From<Box<EncodeError>> for Box<LoopError> {
+    fn from(err: Box<EncodeError>) -> Box<LoopError> {
+        Box::new(LoopError::EncodeError(*err))
     }
 }
 

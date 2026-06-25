@@ -1,9 +1,10 @@
 use bytes::Bytes;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use navy_nvim_rs::rpc::{
-    model::{
-        DecodeState, EncodeState, MessageType, RpcMessage, encode_single_string_arg_msg_to_state,
-        encode_sync, encode_to_state,
+    decode::DecodeState,
+    encode::{
+        EncodeState, MessageType, RpcMessage, encode_single_string_arg_msg_to_state, encode_sync,
+        encode_to_state,
     },
     redraw::{
         RedrawDecodeError, RedrawDecodeResult, RedrawFrame, RedrawFrameInfo, RedrawNotification,
@@ -36,6 +37,12 @@ struct CapturedMessage {
 struct BenchInput {
     name: String,
     bytes: Bytes,
+}
+
+#[derive(Clone)]
+struct NonRedrawInput {
+    name: String,
+    bytes: Vec<u8>,
 }
 
 struct NoopWriter;
@@ -79,35 +86,6 @@ fn encode_message(msg: RpcMessage) -> Vec<u8> {
 
 fn async_bench_runtime() -> Runtime {
     Builder::new_current_thread().enable_all().build().unwrap()
-}
-
-fn non_redraw_rpc_batch(count: usize) -> Vec<u8> {
-    let mut bytes = Vec::new();
-
-    for index in 0..count {
-        let msg = if index % 2 == 0 {
-            RpcMessage::RpcResponse {
-                msgid: index as u64,
-                error: Value::Nil,
-                result: Value::from(index as u64),
-            }
-        } else {
-            RpcMessage::RpcNotification {
-                method: "nvim_buf_lines_event".to_owned(),
-                params: vec![
-                    Value::from(1),
-                    Value::from(0),
-                    Value::from(1),
-                    Value::from(vec![Value::from("line")]),
-                    Value::from(false),
-                ],
-            }
-        };
-
-        bytes.extend_from_slice(&encode_message(msg));
-    }
-
-    bytes
 }
 
 fn consume_redraw_arrays_for_bench(
@@ -162,6 +140,54 @@ fn parse_redraw_arrays_batch(bytes: &Bytes, count: usize) -> usize {
     value_count
 }
 
+fn non_redraw_notification_message() -> RpcMessage {
+    RpcMessage::RpcNotification {
+        method: "nvim_buf_lines_event".to_owned(),
+        params: vec![
+            Value::from(1),
+            Value::from(0),
+            Value::from(1),
+            Value::from(vec![Value::from("line")]),
+            Value::from(false),
+        ],
+    }
+}
+
+fn non_redraw_rpc_inputs() -> Vec<NonRedrawInput> {
+    let response = RpcMessage::RpcResponse {
+        msgid: 1,
+        error: Value::Nil,
+        result: Value::from(1),
+    };
+    let request = encode_request_message();
+    let notification = non_redraw_notification_message();
+
+    vec![
+        NonRedrawInput {
+            name: "response".to_owned(),
+            bytes: encode_message(response),
+        },
+        NonRedrawInput {
+            name: "request".to_owned(),
+            bytes: encode_message(request),
+        },
+        NonRedrawInput {
+            name: "notification".to_owned(),
+            bytes: encode_message(notification),
+        },
+    ]
+}
+
+#[inline]
+fn consume_non_redraw_message_for_bench(decoder: &mut DecodeState) -> bool {
+    let Some(decoded) = decoder.try_decode_message().unwrap() else {
+        return false;
+    };
+    black_box(decoded.message);
+    decoder.consume(decoded.consumed);
+    true
+}
+
 async fn decode_redraw_frames_from_reader(
     decoder: &mut DecodeState,
     bytes: Vec<u8>,
@@ -179,13 +205,7 @@ async fn decode_redraw_frames_from_reader(
                     let frame = info.frame(bytes);
                     frame_bytes += black_box(frame.as_bytes()).len();
                 }
-                Ok(None) => {
-                    if let Some(msg) = decoder.try_decode_message().unwrap() {
-                        black_box(msg);
-                    } else {
-                        break;
-                    }
-                }
+                Ok(None) => panic!("unexpected non-redraw rpc message"),
                 Err(RedrawDecodeError::Incomplete) => break,
                 Err(err) => panic!("redraw decode error: {err:?}"),
             }
@@ -202,27 +222,16 @@ async fn decode_redraw_frames_from_reader(
     frame_bytes
 }
 
-async fn decode_non_redraw_messages_from_reader(
-    decoder: &mut DecodeState,
-    bytes: Vec<u8>,
-    count: usize,
-) -> usize {
+async fn decode_non_redraw_message_from_reader(decoder: &mut DecodeState, bytes: Vec<u8>) {
     let mut reader = Cursor::new(bytes);
-    let mut decoded = 0;
 
-    while decoded < count {
-        while decoder.has_rest() {
+    loop {
+        if decoder.has_rest() {
             match RedrawFrameInfo::probe(decoder.rest()) {
                 Ok(Some(_)) => panic!("unexpected redraw frame"),
                 Ok(None) => {
-                    if let Some(msg) = decoder.try_decode_message().unwrap() {
-                        black_box(msg);
-                        decoded += 1;
-                        if decoded == count {
-                            return decoded;
-                        }
-                    } else {
-                        break;
+                    if consume_non_redraw_message_for_bench(decoder) {
+                        return;
                     }
                 }
                 Err(RedrawDecodeError::Incomplete) => break,
@@ -232,8 +241,6 @@ async fn decode_non_redraw_messages_from_reader(
 
         decoder.read_next_chunk(&mut reader).await.unwrap();
     }
-
-    decoded
 }
 
 fn read_u32(input: &mut &[u8]) -> u32 {
@@ -445,25 +452,23 @@ fn bench_decode(c: &mut Criterion) {
         );
     });
 
-    const NON_REDRAW_RPC_BATCH_COUNT: usize = 64;
-    let non_redraw_rpc_batch = non_redraw_rpc_batch(NON_REDRAW_RPC_BATCH_COUNT);
-    group.throughput(Throughput::Bytes(non_redraw_rpc_batch.len() as u64));
-    group.bench_function("non_redraw_rpc_batch", |b| {
-        b.to_async(&runtime).iter_batched(
-            || (DecodeState::new(), non_redraw_rpc_batch.clone()),
-            |(mut decoder, bytes)| async move {
-                black_box(
-                    decode_non_redraw_messages_from_reader(
-                        &mut decoder,
-                        bytes,
-                        NON_REDRAW_RPC_BATCH_COUNT,
-                    )
-                    .await,
-                )
+    for input in non_redraw_rpc_inputs() {
+        group.throughput(Throughput::Bytes(input.bytes.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("non_redraw", &input.name),
+            &input,
+            |b, input| {
+                b.to_async(&runtime).iter_batched(
+                    || (DecodeState::new(), input.bytes.clone()),
+                    |(mut decoder, bytes)| async move {
+                        decode_non_redraw_message_from_reader(&mut decoder, bytes).await;
+                        black_box(decoder.has_rest());
+                    },
+                    BatchSize::SmallInput,
+                );
             },
-            BatchSize::SmallInput,
         );
-    });
+    }
 
     group.finish();
 }

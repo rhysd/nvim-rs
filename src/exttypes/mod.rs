@@ -11,19 +11,19 @@ pub use window::Window;
 #[macro_export]
 macro_rules! impl_exttype_traits {
     ($ext:ident) => {
-        impl<W> PartialEq for $ext<W>
+        impl<H> PartialEq for $ext<H>
         where
-            W: AsyncWrite + Send + Unpin + 'static,
+            H: Handler,
         {
             fn eq(&self, other: &Self) -> bool {
                 self.code_data == other.code_data && self.neovim == other.neovim
             }
         }
-        impl<W> Eq for $ext<W> where W: AsyncWrite + Send + Unpin + 'static {}
+        impl<H> Eq for $ext<H> where H: Handler {}
 
-        impl<W> Clone for $ext<W>
+        impl<H> Clone for $ext<H>
         where
-            W: AsyncWrite + Send + Unpin + 'static,
+            H: Handler,
         {
             fn clone(&self) -> Self {
                 Self {
@@ -33,9 +33,9 @@ macro_rules! impl_exttype_traits {
             }
         }
 
-        impl<W> IntoVal<Value> for &$ext<W>
+        impl<H> IntoVal<Value> for &$ext<H>
         where
-            W: AsyncWrite + Send + Unpin + 'static,
+            H: Handler,
         {
             fn into_val(self) -> Value {
                 self.code_data.clone()
