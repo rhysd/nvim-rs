@@ -324,7 +324,7 @@ fn selected_ui_inputs(captured: &[CapturedMessage]) -> Vec<BenchInput> {
 fn bench_encode(c: &mut Criterion) {
     let request_msg = encode_request_message();
     let runtime = async_bench_runtime();
-    let mut group = c.benchmark_group("rpc/encode");
+    let mut group = c.benchmark_group("encode");
 
     group.bench_function("request", |b| {
         let state = Mutex::new(EncodeState::new(NoopWriter));
@@ -377,7 +377,7 @@ fn bench_decode(c: &mut Criterion) {
     let captured_scroll_ui = nvim_ui_fixture(NVIM_UI_SCROLL_FIXTURE);
     let captured_400x100_ui_init = nvim_ui_fixture(NVIM_UI_400X100_FIXTURE);
 
-    let mut group = c.benchmark_group("rpc/decode");
+    let mut group = c.benchmark_group("decode");
 
     for input in selected_ui_inputs(&captured_ui_init) {
         group.throughput(Throughput::Bytes(input.bytes.len() as u64));
@@ -477,7 +477,7 @@ fn bench_redraw_array_reader(c: &mut Criterion) {
     let captured_ui_init = nvim_ui_fixture(NVIM_UI_FIXTURE);
     let captured_scroll_ui = nvim_ui_fixture(NVIM_UI_SCROLL_FIXTURE);
 
-    let mut group = c.benchmark_group("rpc/redraw_array_reader");
+    let mut group = c.benchmark_group("redraw_array_reader");
 
     for input in selected_ui_inputs(&captured_ui_init) {
         group.throughput(Throughput::Bytes(input.bytes.len() as u64));
