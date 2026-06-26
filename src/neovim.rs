@@ -512,9 +512,9 @@ impl<H: Handler> Neovim<H> {
         &self,
         width: i64,
         height: i64,
-        opts: &UiAttachOptions<'_>,
+        opts: UiAttachOptions<'_>,
     ) -> Result<(), Box<CallError>> {
-        let opts = opts.to_value_map();
+        let opts = opts.into_value();
         let args = [width.into(), height.into(), opts];
 
         self.call_value_ref("nvim_ui_attach", &args).await??;
@@ -921,7 +921,7 @@ mod tests {
                 options.set_rgb(true);
                 options.set_linegrid_external(true);
                 options.set_hlstate_external(true);
-                nvim.ui_attach(120, 40, &options).await
+                nvim.ui_attach(120, 40, options).await
             }
         });
 
@@ -946,8 +946,8 @@ mod tests {
                     Value::from(40),
                     Value::Map(vec![
                         (Value::from("rgb"), Value::from(true)),
-                        (Value::from("ext_hlstate"), Value::from(true)),
                         (Value::from("ext_linegrid"), Value::from(true)),
+                        (Value::from("ext_hlstate"), Value::from(true)),
                     ]),
                 ]),
             ]))

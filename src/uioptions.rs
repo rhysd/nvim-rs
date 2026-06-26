@@ -5,152 +5,91 @@
 use rmpv::ValueRef;
 
 #[derive(Default)]
-pub struct UiAttachOptions<'a> {
-    rgb: Option<bool>,
-    r#override: Option<bool>,
-    ext_cmdline: Option<bool>,
-    ext_hlstate: Option<bool>,
-    ext_linegrid: Option<bool>,
-    ext_messages: Option<bool>,
-    ext_multigrid: Option<bool>,
-    ext_popupmenu: Option<bool>,
-    ext_tabline: Option<bool>,
-    ext_termcolors: Option<bool>,
-    term_name: Option<&'a str>,
-    term_colors: Option<u64>,
-    term_background: Option<&'a str>,
-    stdin_fd: Option<u64>,
-    stdin_tty: Option<bool>,
-    stdout_tty: Option<bool>,
-    ext_wildmenu: Option<bool>,
-}
+pub struct UiAttachOptions<'a>(Vec<(ValueRef<'a>, ValueRef<'a>)>);
 
 impl<'a> UiAttachOptions<'a> {
     pub fn set_rgb(&mut self, val: bool) {
-        self.rgb = Some(val);
+        self.0.push(("rgb".into(), ValueRef::Boolean(val)));
     }
 
     pub fn set_override(&mut self, val: bool) {
-        self.r#override = Some(val);
+        self.0.push(("override".into(), ValueRef::Boolean(val)));
     }
 
     pub fn set_cmdline_external(&mut self, val: bool) {
-        self.ext_cmdline = Some(val);
+        self.0.push(("ext_cmdline".into(), ValueRef::Boolean(val)));
     }
 
     pub fn set_hlstate_external(&mut self, val: bool) {
-        self.ext_hlstate = Some(val);
+        self.0.push(("ext_hlstate".into(), ValueRef::Boolean(val)));
     }
 
     pub fn set_linegrid_external(&mut self, val: bool) {
-        self.ext_linegrid = Some(val);
+        self.0.push(("ext_linegrid".into(), ValueRef::Boolean(val)));
     }
 
     pub fn set_messages_external(&mut self, val: bool) {
-        self.ext_messages = Some(val);
+        self.0.push(("ext_messages".into(), ValueRef::Boolean(val)));
     }
 
     pub fn set_multigrid_external(&mut self, val: bool) {
-        self.ext_multigrid = Some(val);
+        self.0
+            .push(("ext_multigrid".into(), ValueRef::Boolean(val)));
     }
 
     pub fn set_popupmenu_external(&mut self, val: bool) {
-        self.ext_popupmenu = Some(val);
+        self.0
+            .push(("ext_popupmenu".into(), ValueRef::Boolean(val)));
     }
 
     pub fn set_tabline_external(&mut self, val: bool) {
-        self.ext_tabline = Some(val);
+        self.0.push(("ext_tabline".into(), ValueRef::Boolean(val)));
     }
 
     pub fn set_termcolors_external(&mut self, val: bool) {
-        self.ext_termcolors = Some(val);
+        self.0
+            .push(("ext_termcolors".into(), ValueRef::Boolean(val)));
     }
 
     pub fn set_term_name(&mut self, val: &'a str) {
-        self.term_name = Some(val);
+        self.0.push(("term_name".into(), val.into()));
     }
 
     pub fn set_term_colors(&mut self, val: u64) {
-        self.term_colors = Some(val);
+        self.0.push(("term_colors".into(), val.into()));
     }
 
     pub fn set_term_background(&mut self, val: &'a str) {
-        self.term_background = Some(val);
+        self.0.push(("term_background".into(), val.into()));
     }
 
     pub fn set_stdin_fd(&mut self, val: u64) {
-        self.stdin_fd = Some(val);
+        self.0.push(("stdin_fd".into(), val.into()));
     }
 
     pub fn set_stdin_tty(&mut self, val: bool) {
-        self.stdin_tty = Some(val);
+        self.0.push(("stdin_tty".into(), ValueRef::Boolean(val)));
     }
 
     pub fn set_stdout_tty(&mut self, val: bool) {
-        self.stdout_tty = Some(val);
+        self.0.push(("stdout_tty".into(), ValueRef::Boolean(val)));
     }
 
     pub fn set_wildmenu_external(&mut self, val: bool) {
-        self.ext_wildmenu = Some(val);
+        self.0.push(("ext_wildmenu".into(), ValueRef::Boolean(val)));
     }
 
     #[must_use]
-    pub(crate) fn to_value_map(&self) -> ValueRef<'a> {
-        let mut map = vec![];
-
-        if let Some(value) = self.rgb {
-            map.push(("rgb".into(), ValueRef::Boolean(value)));
-        }
-        if let Some(value) = self.r#override {
-            map.push(("override".into(), ValueRef::Boolean(value)));
-        }
-        if let Some(value) = self.ext_cmdline {
-            map.push(("ext_cmdline".into(), ValueRef::Boolean(value)));
-        }
-        if let Some(value) = self.ext_hlstate {
-            map.push(("ext_hlstate".into(), ValueRef::Boolean(value)));
-        }
-        if let Some(value) = self.ext_linegrid {
-            map.push(("ext_linegrid".into(), ValueRef::Boolean(value)));
-        }
-        if let Some(value) = self.ext_messages {
-            map.push(("ext_messages".into(), ValueRef::Boolean(value)));
-        }
-        if let Some(value) = self.ext_multigrid {
-            map.push(("ext_multigrid".into(), ValueRef::Boolean(value)));
-        }
-        if let Some(value) = self.ext_popupmenu {
-            map.push(("ext_popupmenu".into(), ValueRef::Boolean(value)));
-        }
-        if let Some(value) = self.ext_tabline {
-            map.push(("ext_tabline".into(), ValueRef::Boolean(value)));
-        }
-        if let Some(value) = self.ext_termcolors {
-            map.push(("ext_termcolors".into(), ValueRef::Boolean(value)));
-        }
-        if let Some(value) = self.term_name {
-            map.push(("term_name".into(), value.into()));
-        }
-        if let Some(value) = self.term_colors {
-            map.push(("term_colors".into(), value.into()));
-        }
-        if let Some(value) = self.term_background {
-            map.push(("term_background".into(), value.into()));
-        }
-        if let Some(value) = self.stdin_fd {
-            map.push(("stdin_fd".into(), value.into()));
-        }
-        if let Some(value) = self.stdin_tty {
-            map.push(("stdin_tty".into(), ValueRef::Boolean(value)));
-        }
-        if let Some(value) = self.stdout_tty {
-            map.push(("stdout_tty".into(), ValueRef::Boolean(value)));
-        }
-        if let Some(value) = self.ext_wildmenu {
-            map.push(("ext_wildmenu".into(), ValueRef::Boolean(value)));
-        }
-
-        ValueRef::Map(map)
+    pub(crate) fn into_value(self) -> ValueRef<'a> {
+        debug_assert_eq!(
+            self.0
+                .iter()
+                .find(|(key, _)| self.0.iter().filter(|(k, _)| key == k).count() != 1),
+            None,
+            "duplicate entry in UI options: {:?}",
+            self.0,
+        );
+        ValueRef::Map(self.0)
     }
 }
 
@@ -162,7 +101,7 @@ mod tests {
     fn default_options_encode_empty_map() {
         let options = UiAttachOptions::default();
 
-        assert_eq!(ValueRef::Map(vec![]), options.to_value_map());
+        assert_eq!(ValueRef::Map(vec![]), options.into_value());
     }
 
     #[test]
@@ -186,7 +125,7 @@ mod tests {
         options.set_stdout_tty(false);
         options.set_wildmenu_external(true);
 
-        let value_map = options.to_value_map();
+        let value_map = options.into_value();
 
         assert_eq!(
             ValueRef::Map(vec![
@@ -209,26 +148,6 @@ mod tests {
                 ("ext_wildmenu".into(), ValueRef::Boolean(true)),
             ]),
             value_map
-        );
-    }
-
-    #[test]
-    fn setters_overwrite_existing_options() {
-        let mut options = UiAttachOptions::default();
-        options.set_rgb(true);
-        options.set_rgb(false);
-        options.set_term_name("first");
-        options.set_term_name("second");
-        options.set_stdin_fd(1);
-        options.set_stdin_fd(9);
-
-        assert_eq!(
-            ValueRef::Map(vec![
-                ("rgb".into(), ValueRef::Boolean(false)),
-                ("term_name".into(), "second".into()),
-                ("stdin_fd".into(), 9_u64.into()),
-            ]),
-            options.to_value_map()
         );
     }
 }

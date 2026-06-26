@@ -124,7 +124,7 @@ async fn main() -> Result<(), AnyError> {
     opts.set_rgb(true);
     opts.set_linegrid_external(true);
     opts.set_hlstate_external(true);
-    nvim.ui_attach(80, 24, &opts).await?;
+    nvim.ui_attach(80, 24, opts).await?;
 
     eprintln!("Type Neovim input line by line. Example: :quit");
     let mut input_task = tokio::spawn(input_repl(nvim.clone()));

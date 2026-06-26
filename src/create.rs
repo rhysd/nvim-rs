@@ -312,7 +312,7 @@ mod tests {
         options.set_rgb(true);
         options.set_linegrid_external(true);
         options.set_hlstate_external(true);
-        time::timeout(Duration::from_secs(5), nvim.ui_attach(80, 24, &options))
+        time::timeout(Duration::from_secs(5), nvim.ui_attach(80, 24, options))
             .await
             .expect("timed out waiting for nvim_ui_attach response")
             .unwrap();
