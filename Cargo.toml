@@ -57,6 +57,9 @@ name = "quitting"
 [[example]]
 name = "basic"
 
+[[example]]
+name = "redraw"
+
 [[test]]
 name = "connecting"
 path = "tests/connecting/mod.rs"

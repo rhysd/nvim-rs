@@ -433,6 +433,14 @@ impl<'de> ArrayReader<'de> {
     }
 
     #[inline]
+    pub fn read_value_ref(&mut self) -> RedrawDecodeResult<ValueRef<'de>> {
+        self.ensure_remaining()?;
+        let value = self.reader.read_value_ref()?;
+        self.remaining -= 1;
+        Ok(value)
+    }
+
+    #[inline]
     pub fn read_array<T>(
         &mut self,
         f: impl FnOnce(&mut ArrayReader<'de>) -> RedrawDecodeResult<T>,
@@ -1404,6 +1412,27 @@ mod tests {
         assert_eq!(array.read_as_string().unwrap(), None);
         assert!(array.is_empty());
         assert_incomplete(array.read_as_string());
+    }
+
+    #[test]
+    fn array_reader_reads_value_refs() {
+        let bytes = encode_value(Value::from(vec![
+            Value::from("text"),
+            Value::from(vec![Value::from(1), Value::from(true)]),
+            Value::from(vec![(Value::from("key"), Value::from("value"))]),
+        ]));
+        let mut array = ArrayReader::new(&bytes).unwrap();
+
+        assert!(
+            matches!(array.read_value_ref().unwrap(), ValueRef::String(value) if value.as_str() == Some("text"))
+        );
+        assert!(
+            matches!(array.read_value_ref().unwrap(), ValueRef::Array(values) if values.len() == 2)
+        );
+        assert!(
+            matches!(array.read_value_ref().unwrap(), ValueRef::Map(entries) if entries.len() == 1)
+        );
+        assert_incomplete(array.read_value_ref());
     }
 
     #[test]
