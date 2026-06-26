@@ -27,7 +27,6 @@ pub mod rpc;
 #[macro_use]
 pub mod neovim;
 pub mod error;
-pub mod examples;
 pub mod exttypes;
 pub mod neovim_api;
 pub mod neovim_api_manual;

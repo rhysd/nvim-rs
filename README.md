@@ -1,11 +1,14 @@
+> [!NOTE]
+> This is a branch optimized for Neovim GUI frontend use case.
+
 # nvim-rs ![CI](https://github.com/rhysd/nvim-rs/actions/workflows/ci.yml/badge.svg)  [![(Docs.rs)](https://docs.rs/nvim-rs/badge.svg)](https://docs.rs/nvim-rs/) [![(Crates.io status)](https://img.shields.io/crates/v/nvim-rs.svg)](https://crates.io/crates/nvim-rs)
 Rust library for Neovim msgpack-rpc clients. Utilizes async to allow for arbitrary nesting of requests.
 
 ## Status
 
-Useable, see the `examples/` and `tests/` folders for examples. The `navy_nvim_rs::examples` submodule contains documentation of the examples.
+Useable, see the `examples/` and `tests/` folders for examples.
 
-The **API** is unstable, see the [Roadmap](https://github.com/rhysd/nvim-rs/issues/1) for things being planned.
+The **API** is unstable.
 
 ## Contributing
 
