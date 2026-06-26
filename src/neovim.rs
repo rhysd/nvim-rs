@@ -576,6 +576,7 @@ mod tests {
 
     use rmpv::encode::write_value;
     use std::io::Cursor;
+    use tokio::{io::AsyncWriteExt, task::yield_now};
 
     use super::*;
     use crate::rpc::{
@@ -655,6 +656,16 @@ mod tests {
             error,
             result,
         ]))
+    }
+
+    async fn wait_for_pending_request(queue: &Queue) {
+        for _ in 0..100 {
+            if !queue.lock().is_empty() {
+                return;
+            }
+            yield_now().await;
+        }
+        panic!("request was not queued");
     }
 
     fn test_neovim<H>() -> Neovim<H>
@@ -804,6 +815,246 @@ mod tests {
                 Value::from(vec![Value::from(true)]),
             ]))
         );
+    }
+
+    #[tokio::test]
+    async fn notify_input_writes_notification_without_queueing_request() {
+        let nvim = test_neovim::<CountingHandler>();
+
+        nvim.notify_input("<C-D>").await.unwrap();
+
+        assert!(nvim.inner.queue.lock().is_empty());
+
+        let writer = nvim.inner.writer.lock().await;
+        assert_eq!(
+            writer.writer(),
+            &encoded_value(Value::from(vec![
+                Value::from(2),
+                Value::from("nvim_input"),
+                Value::from(vec![Value::from("<C-D>")]),
+            ]))
+        );
+    }
+
+    #[tokio::test]
+    async fn ui_try_resize_writes_notification_without_queueing_request() {
+        let nvim = test_neovim::<CountingHandler>();
+
+        nvim.ui_try_resize(120, 40).await.unwrap();
+
+        assert!(nvim.inner.queue.lock().is_empty());
+
+        let writer = nvim.inner.writer.lock().await;
+        assert_eq!(
+            writer.writer(),
+            &encoded_value(Value::from(vec![
+                Value::from(2),
+                Value::from("nvim_ui_try_resize"),
+                Value::from(vec![Value::from(120), Value::from(40)]),
+            ]))
+        );
+    }
+
+    #[tokio::test]
+    async fn ui_set_focus_writes_notification_without_queueing_request() {
+        let nvim = test_neovim::<CountingHandler>();
+
+        nvim.ui_set_focus(false).await.unwrap();
+
+        assert!(nvim.inner.queue.lock().is_empty());
+
+        let writer = nvim.inner.writer.lock().await;
+        assert_eq!(
+            writer.writer(),
+            &encoded_value(Value::from(vec![
+                Value::from(2),
+                Value::from("nvim_ui_set_focus"),
+                Value::from(vec![Value::from(false)]),
+            ]))
+        );
+    }
+
+    #[tokio::test]
+    async fn request_input_writes_request_and_returns_written_byte_count() {
+        let (mut remote, reader) = tokio::io::duplex(1024);
+        let (nvim, io) = Neovim::new(reader, Vec::new(), Dummy::<Vec<u8>>::new());
+        let inner = nvim.inner.clone();
+        let io_handle = tokio::spawn(io);
+
+        let request_handle = tokio::spawn({
+            let nvim = nvim.clone();
+            async move { nvim.request_input("<Cmd>qall<CR>").await }
+        });
+
+        wait_for_pending_request(&inner.queue).await;
+        remote
+            .write_all(&response_bytes(0, Value::from(14), Value::Nil))
+            .await
+            .unwrap();
+
+        assert_eq!(request_handle.await.unwrap().unwrap(), 14);
+        io_handle.abort();
+
+        let writer = inner.writer.lock().await;
+        assert_eq!(
+            writer.writer(),
+            &encoded_value(Value::from(vec![
+                Value::from(0),
+                Value::from(0),
+                Value::from("nvim_input"),
+                Value::from(vec![Value::from("<Cmd>qall<CR>")]),
+            ]))
+        );
+    }
+
+    #[tokio::test]
+    async fn ui_attach_writes_request_and_waits_for_success_response() {
+        let (mut remote, reader) = tokio::io::duplex(1024);
+        let (nvim, io) = Neovim::new(reader, Vec::new(), Dummy::<Vec<u8>>::new());
+        let inner = nvim.inner.clone();
+        let io_handle = tokio::spawn(io);
+
+        let request_handle = tokio::spawn({
+            let nvim = nvim.clone();
+            async move {
+                let mut options = UiAttachOptions::default();
+                options.set_rgb(true);
+                options.set_linegrid_external(true);
+                options.set_hlstate_external(true);
+                nvim.ui_attach(120, 40, &options).await
+            }
+        });
+
+        wait_for_pending_request(&inner.queue).await;
+        remote
+            .write_all(&response_bytes(0, Value::Nil, Value::Nil))
+            .await
+            .unwrap();
+
+        request_handle.await.unwrap().unwrap();
+        io_handle.abort();
+
+        let writer = inner.writer.lock().await;
+        assert_eq!(
+            writer.writer(),
+            &encoded_value(Value::from(vec![
+                Value::from(0),
+                Value::from(0),
+                Value::from("nvim_ui_attach"),
+                Value::from(vec![
+                    Value::from(120),
+                    Value::from(40),
+                    Value::Map(vec![
+                        (Value::from("rgb"), Value::from(true)),
+                        (Value::from("ext_hlstate"), Value::from(true)),
+                        (Value::from("ext_linegrid"), Value::from(true)),
+                    ]),
+                ]),
+            ]))
+        );
+    }
+
+    #[tokio::test]
+    async fn cmd_value_ref_writes_nvim_cmd_request_and_returns_output() {
+        let (mut remote, reader) = tokio::io::duplex(1024);
+        let (nvim, io) = Neovim::new(reader, Vec::new(), Dummy::<Vec<u8>>::new());
+        let inner = nvim.inner.clone();
+        let io_handle = tokio::spawn(io);
+
+        let request_handle = tokio::spawn({
+            let nvim = nvim.clone();
+            async move {
+                let command = ValueRef::Map(vec![
+                    (ValueRef::from("cmd"), ValueRef::from("edit")),
+                    (
+                        ValueRef::from("args"),
+                        ValueRef::Array(vec![ValueRef::from("file.txt")]),
+                    ),
+                    (
+                        ValueRef::from("magic"),
+                        ValueRef::Map(vec![
+                            (ValueRef::from("file"), ValueRef::Boolean(false)),
+                            (ValueRef::from("bar"), ValueRef::Boolean(false)),
+                        ]),
+                    ),
+                ]);
+                nvim.cmd_value_ref(command, ValueRef::Map(vec![])).await
+            }
+        });
+
+        wait_for_pending_request(&inner.queue).await;
+        remote
+            .write_all(&response_bytes(0, Value::from("opened"), Value::Nil))
+            .await
+            .unwrap();
+
+        assert_eq!(request_handle.await.unwrap().unwrap(), "opened");
+        io_handle.abort();
+
+        let writer = inner.writer.lock().await;
+        assert_eq!(
+            writer.writer(),
+            &encoded_value(Value::from(vec![
+                Value::from(0),
+                Value::from(0),
+                Value::from("nvim_cmd"),
+                Value::from(vec![
+                    Value::Map(vec![
+                        (Value::from("cmd"), Value::from("edit")),
+                        (
+                            Value::from("args"),
+                            Value::Array(vec![Value::from("file.txt")])
+                        ),
+                        (
+                            Value::from("magic"),
+                            Value::Map(vec![
+                                (Value::from("file"), Value::from(false)),
+                                (Value::from("bar"), Value::from(false)),
+                            ])
+                        ),
+                    ]),
+                    Value::Map(vec![]),
+                ]),
+            ]))
+        );
+    }
+
+    #[tokio::test]
+    async fn cmd_value_ref_returns_neovim_error_response() {
+        let (mut remote, reader) = tokio::io::duplex(1024);
+        let (nvim, io) = Neovim::new(reader, Vec::new(), Dummy::<Vec<u8>>::new());
+        let inner = nvim.inner.clone();
+        let io_handle = tokio::spawn(io);
+
+        let request_handle = tokio::spawn({
+            let nvim = nvim.clone();
+            async move {
+                nvim.cmd_value_ref(
+                    ValueRef::Map(vec![(ValueRef::from("cmd"), ValueRef::from("edit"))]),
+                    ValueRef::Map(vec![]),
+                )
+                .await
+            }
+        });
+
+        wait_for_pending_request(&inner.queue).await;
+        remote
+            .write_all(&response_bytes(
+                0,
+                Value::Nil,
+                Value::Array(vec![Value::from(1), Value::from("failed")]),
+            ))
+            .await
+            .unwrap();
+
+        let err = request_handle.await.unwrap().unwrap_err();
+        match *err {
+            CallError::NeovimError(Some(1), ref message) => {
+                assert_eq!(message, "failed");
+            }
+            ref err => panic!("unexpected error: {err:?}"),
+        }
+        io_handle.abort();
     }
 
     #[tokio::test]

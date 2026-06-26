@@ -207,3 +207,135 @@ where
 
     Ok((neovim, io_handle, child))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{env, path::PathBuf, time::Duration};
+
+    use tokio::{
+        sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+        time,
+    };
+
+    use super::*;
+    use crate::{
+        rpc::{
+            handler::Handler,
+            redraw::{RedrawDecodeResult, RedrawNotification},
+        },
+        uioptions::UiAttachOptions,
+    };
+
+    #[derive(Debug)]
+    enum RedrawSignal {
+        Any,
+        GridResize { cols: u64, rows: u64 },
+    }
+
+    #[derive(Clone)]
+    struct TestHandler {
+        redraw_tx: UnboundedSender<RedrawSignal>,
+    }
+
+    impl Handler for TestHandler {
+        type Writer = ChildStdin;
+
+        fn handle_redraw(&self, mut redraw: RedrawNotification<'_>) -> RedrawDecodeResult<()> {
+            let _ = self.redraw_tx.send(RedrawSignal::Any);
+
+            redraw.for_each_batch(|batch| {
+                if batch.name == "grid_resize" {
+                    while !batch.args.is_empty() {
+                        batch.args.read_array(|args| {
+                            let _grid = args.read_u64()?;
+                            let cols = args.read_u64()?;
+                            let rows = args.read_u64()?;
+                            let _ = self.redraw_tx.send(RedrawSignal::GridResize { cols, rows });
+                            Ok(())
+                        })?;
+                    }
+                }
+                Ok(true)
+            })
+        }
+    }
+
+    fn nvim_test_bin() -> PathBuf {
+        let path = env::var_os("NVIMRS_TEST_BIN")
+            .expect("NVIMRS_TEST_BIN must point to a valid nvim executable");
+        let path = PathBuf::from(path);
+        assert!(
+            path.exists(),
+            "nvim bin from NVIMRS_TEST_BIN does not exist: {}",
+            path.display()
+        );
+        path
+    }
+
+    async fn recv_redraw(redraw_rx: &mut UnboundedReceiver<RedrawSignal>) -> RedrawSignal {
+        time::timeout(Duration::from_secs(5), redraw_rx.recv())
+            .await
+            .expect("timed out waiting for redraw notification")
+            .expect("redraw channel closed")
+    }
+
+    async fn wait_for_grid_resize(
+        redraw_rx: &mut UnboundedReceiver<RedrawSignal>,
+        expected_cols: u64,
+        expected_rows: u64,
+    ) {
+        loop {
+            match recv_redraw(redraw_rx).await {
+                RedrawSignal::GridResize { cols, rows }
+                    if cols == expected_cols && rows == expected_rows =>
+                {
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn new_child_cmd_spawns_embedded_nvim_and_attaches_ui() {
+        let path = nvim_test_bin();
+
+        let mut cmd = Command::new(path);
+        cmd.args(["--embed", "--headless", "--clean", "-i", "NONE"])
+            .stderr(Stdio::piped());
+
+        let (redraw_tx, mut redraw_rx) = unbounded_channel();
+        let handler = TestHandler { redraw_tx };
+        let (nvim, io_handle, mut child) = new_child_cmd(cmd, handler).unwrap();
+
+        let mut options = UiAttachOptions::default();
+        options.set_rgb(true);
+        options.set_linegrid_external(true);
+        options.set_hlstate_external(true);
+        time::timeout(Duration::from_secs(5), nvim.ui_attach(80, 24, &options))
+            .await
+            .expect("timed out waiting for nvim_ui_attach response")
+            .unwrap();
+        let _ = recv_redraw(&mut redraw_rx).await;
+
+        nvim.ui_try_resize(100, 30).await.unwrap();
+        wait_for_grid_resize(&mut redraw_rx, 100, 30).await;
+
+        let quit_input = "<Cmd>qall!<CR>";
+        let written = time::timeout(Duration::from_secs(5), nvim.request_input(quit_input))
+            .await
+            .expect("timed out waiting for nvim_input response")
+            .unwrap();
+        assert_eq!(written, quit_input.len() as i64);
+
+        let status = match time::timeout(Duration::from_secs(5), child.wait()).await {
+            Ok(status) => status.unwrap(),
+            Err(err) => {
+                child.kill().await.unwrap();
+                panic!("timed out waiting for nvim process to exit: {err}");
+            }
+        };
+        assert!(status.success(), "nvim exited with status: {status}");
+        io_handle.abort();
+    }
+}
