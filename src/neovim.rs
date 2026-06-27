@@ -897,6 +897,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_request_receives_decode_error_from_io_loop() {
+        let (mut remote, reader) = tokio::io::duplex(1024);
+        let (nvim, io) = Neovim::new(reader, Vec::new(), Dummy::<Vec<u8>>::new());
+        let inner = nvim.inner.clone();
+        let io_handle = tokio::spawn(io);
+
+        let request_handle = tokio::spawn({
+            let nvim = nvim.clone();
+            async move { nvim.request_input("<C-D>").await }
+        });
+
+        wait_for_pending_request(&inner.queue).await;
+        remote
+            .write_all(&encoded_value(Value::from(vec![Value::from(3)])))
+            .await
+            .unwrap();
+
+        let err = request_handle.await.unwrap().unwrap_err();
+        match *err {
+            CallError::DecodeError(_, "nvim_input") => {}
+            ref err => panic!("unexpected call error: {err:?}"),
+        }
+
+        let err = io_handle.await.unwrap().unwrap_err();
+        match *err {
+            LoopError::DecodeError(ref err) => {
+                assert!(matches!(err.as_ref(), DecodeError::InvalidMessage(_)));
+            }
+            ref err => panic!("unexpected loop error: {err:?}"),
+        }
+
+        assert!(inner.queue.lock().is_empty());
+    }
+
+    #[tokio::test]
     async fn ui_attach_writes_request_and_waits_for_success_response() {
         let (mut remote, reader) = tokio::io::duplex(1024);
         let (nvim, io) = Neovim::new(reader, Vec::new(), Dummy::<Vec<u8>>::new());
