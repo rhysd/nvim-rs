@@ -2,5 +2,3 @@
 mod common;
 
 pub mod conns;
-
-pub mod handshake;

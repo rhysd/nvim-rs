@@ -8,7 +8,7 @@ use std::{
 };
 
 use parking_lot::Mutex as SyncMutex;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{
     Mutex,
     mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
@@ -16,10 +16,10 @@ use tokio::sync::{
 };
 
 use crate::{
-    error::{CallError, DecodeError, EncodeError, HandshakeError, LoopError},
+    error::{CallError, DecodeError, EncodeError, LoopError},
     rpc::{
         decode::{DecodeState, IncomingMessage, RpcResponse},
-        encode::{self, EncodeState, IntoVal, MessageType, RpcMessage},
+        encode::{self, EncodeState, MessageType, RpcMessage},
         handler::Handler,
         redraw::{RedrawDecodeError, RedrawFrame, RedrawFrameInfo},
     },
@@ -126,107 +126,6 @@ impl<H: Handler> Neovim<H> {
         };
 
         (req, fut)
-    }
-
-    /// Create a new instance, immediately send a handshake message and
-    /// wait for the response. Unlike `new`, this function is tolerant to extra
-    /// data in the reader before the handshake response is received.
-    ///
-    /// `message` should be a unique string that is normally not found in the
-    /// stdout. Due to the way Neovim packs strings, the length has to be either
-    /// less than 20 characters or more than 31 characters long.
-    /// See https://github.com/neovim/neovim/issues/32784 for more information.
-    pub async fn handshake<R>(
-        mut reader: R,
-        writer: H::Writer,
-        handler: H,
-        message: &str,
-    ) -> Result<
-        (
-            Self,
-            impl Future<Output = Result<(), Box<LoopError>>> + use<H, R>,
-        ),
-        Box<HandshakeError>,
-    >
-    where
-        R: AsyncRead + Send + Unpin + 'static,
-    {
-        let instance = Neovim {
-            inner: Arc::new(NeovimInner {
-                writer: Mutex::new(EncodeState::new(writer)),
-                queue: SyncMutex::new(Vec::new()),
-                msgid_counter: AtomicU64::new(0),
-            }),
-        };
-
-        let msgid = instance.inner.msgid_counter.fetch_add(1, Ordering::Relaxed);
-        // Nvim encodes fixed size strings with a length of 20-31 bytes wrong, so
-        // avoid that
-        let msg_len = message.len();
-        assert!(
-            !(20..=31).contains(&msg_len),
-            "The message should be less than 20 characters or more than 31 characters
-      long, but the length is {msg_len}."
-        );
-
-        let req = RpcMessage::RpcRequest {
-            msgid,
-            method: "nvim_exec_lua".to_owned(),
-            params: call_args![format!("return '{message}'"), Vec::<Value>::new()],
-        };
-        encode::encode_to_state(&instance.inner.writer, req).await?;
-
-        let expected_resp = RpcMessage::RpcResponse {
-            msgid,
-            error: rmpv::Value::Nil,
-            result: rmpv::Value::String(message.into()),
-        };
-        let mut expected_data = Vec::new();
-        encode::encode_sync(&mut expected_data, expected_resp)
-            .expect("Encoding static data can't fail");
-        let mut actual_data = Vec::new();
-        let mut start = 0;
-        let mut end = 0;
-        while end - start != expected_data.len() {
-            actual_data.resize(start + expected_data.len(), 0);
-
-            let bytes_read = reader
-                .read(&mut actual_data[start..])
-                .await
-                .map_err(|err| {
-                    (
-                        err,
-                        String::from_utf8_lossy(&actual_data[..end]).to_string(),
-                    )
-                })?;
-            if bytes_read == 0 {
-                // The end of the stream has been reached when the reader returns Ok(0).
-                // Since we haven't detected a suitable response yet, return an error.
-                return Err(Box::new(HandshakeError::UnexpectedResponse(
-                    String::from_utf8_lossy(&actual_data[..end]).to_string(),
-                )));
-            }
-            end += bytes_read;
-            while end - start > 0 {
-                if actual_data[start..end] == expected_data[..end - start] {
-                    break;
-                }
-                start += 1;
-            }
-        }
-
-        let (sender, receiver) = unbounded_channel();
-        let io_instance = instance.clone();
-        let handler_instance = instance.clone();
-        let fut = async move {
-            tokio::try_join!(
-                io_instance.io_loop(reader, sender),
-                handler_instance.handler_loop(handler, receiver),
-            )
-            .map(|_| ())
-        };
-
-        Ok((instance, fut))
     }
 
     async fn send_msg(

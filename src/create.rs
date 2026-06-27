@@ -21,11 +21,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::{
-    error::{HandshakeError, LoopError},
-    neovim::Neovim,
-    rpc::handler::Handler,
-};
+use crate::{error::LoopError, neovim::Neovim, rpc::handler::Handler};
 
 #[cfg(unix)]
 type Connection = tokio::net::UnixStream;
@@ -174,38 +170,6 @@ where
     let io_handle = spawn(io);
 
     Ok((neovim, io_handle))
-}
-
-/// Connect to a neovim instance by spawning a new one and send a handshake
-/// message. Unlike `new_child_cmd`, this function is tolerant to extra
-/// data in the reader before the handshake response is received.
-///
-/// `message` should be a unique string that is normally not found in the
-/// stdout. Due to the way Neovim packs strings, the length has to be either
-/// less than 20 characters or more than 31 characters long.
-/// See https://github.com/neovim/neovim/issues/32784 for more information.
-pub async fn new_child_handshake_cmd<H>(
-    cmd: &mut Command,
-    handler: H,
-    message: &str,
-) -> Result<SpawnedChild<H>, Box<HandshakeError>>
-where
-    H: Handler<Writer = ChildStdin> + Send + 'static,
-{
-    let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| Error::other("Can't open stdout"))?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| Error::other("Can't open stdin"))?;
-
-    let (neovim, io) = Neovim::handshake(stdout, stdin, handler, message).await?;
-    let io_handle = spawn(io);
-
-    Ok((neovim, io_handle, child))
 }
 
 #[cfg(test)]
