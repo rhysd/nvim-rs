@@ -59,7 +59,7 @@ impl From<Box<DecodeError>> for RedrawDecodeError {
 
 impl From<RedrawDecodeError> for Box<LoopError> {
     fn from(value: RedrawDecodeError) -> Self {
-        Box::new(LoopError::DecodeError(Arc::new(value.into()), None))
+        Box::new(LoopError::DecodeError(Arc::new(value.into())))
     }
 }
 

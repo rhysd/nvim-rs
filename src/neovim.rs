@@ -369,22 +369,13 @@ impl<H: Handler> Neovim<H> {
         err: Box<DecodeError>,
     ) -> Result<Arc<DecodeError>, Box<LoopError>> {
         let err: Arc<DecodeError> = Arc::from(err);
-        let mut v: Vec<u64> = vec![];
 
         let mut queue = queue.lock();
-        queue.drain(0..).for_each(|sender| {
-            let msgid = sender.0;
-            sender
-                .1
-                .send(Err(err.clone()))
-                .unwrap_or_else(|_| v.push(msgid));
-        });
-
-        if v.is_empty() {
-            Ok(err)
-        } else {
-            Err((err, v).into())
+        for (_, sender) in queue.drain(..) {
+            let _ = sender.send(Err(err.clone()));
         }
+
+        Ok(err)
     }
 
     async fn handler_loop(
@@ -421,7 +412,7 @@ impl<H: Handler> Neovim<H> {
                 Ok(msg) => msg,
                 Err(err) => {
                     let err = self.send_error_to_callers(&self.inner.queue, err).await?;
-                    return Err(Box::new(LoopError::DecodeError(err, None)));
+                    return Err(Box::new(LoopError::DecodeError(err)));
                 }
             };
 
@@ -450,7 +441,8 @@ impl<H: Handler> Neovim<H> {
                         Err(error)
                     };
                     if let Err(Ok(response)) = sender.send(Ok(response)) {
-                        return Err((msgid, response).into());
+                        let err = LoopError::InternalSendResponseError(msgid, response);
+                        return Err(Box::new(err));
                     }
                 }
             }
@@ -558,7 +550,7 @@ fn find_sender(
 ) -> Result<oneshot::Sender<ResponseResult>, Box<LoopError>> {
     let mut queue = queue.lock();
     let Some(pos) = queue.iter().position(|req| req.0 == msgid) else {
-        return Err(msgid.into());
+        return Err(Box::new(LoopError::MsgidNotFound(msgid)));
     };
     let sender = queue.remove(pos).1;
     Ok(sender)
