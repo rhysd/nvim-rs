@@ -35,7 +35,7 @@
 //! either neovim closed the channel actively, or neovim was closed. Often, this
 //! is not seen as a real error, but the signal for the plugin to quit. See the
 //! [quitting example](crate::examples::quitting).
-use std::{error::Error, fmt, fmt::Display, io, io::ErrorKind, ops::RangeInclusive, sync::Arc};
+use std::{error::Error, fmt, fmt::Display, io, io::ErrorKind, sync::Arc};
 
 use rmpv::{Value, decode::Error as RmpvDecodeError, encode::Error as RmpvEncodeError};
 use tokio::sync::oneshot;
@@ -48,20 +48,14 @@ use tokio::sync::oneshot;
 pub enum InvalidMessage {
     /// The value read was not an array
     NotAnArray(Value),
-    /// WrongArrayLength(should, is) means that the array should have length in
-    /// the range `should`, but has length `is`
-    WrongArrayLength(RangeInclusive<u64>, u64),
+    /// WrongArrayLength(min, max, is) means that the array should have length in
+    /// the range `min..=max`, but has length `is`
+    WrongArrayLength(u64, u64, u64),
     /// The first array element (=the message type) was not decodable into a u64
     InvalidType(Value),
     /// The first array element (=the message type) was decodable into a u64
     /// larger than 2
     UnknownMessageType(u64),
-    /// The params of a request or notification weren't an array
-    InvalidParams(Value, String),
-    /// The method name of a notification was not decodable into a String
-    InvalidNotificationName(Value),
-    /// The method name of a request was not decodable into a String
-    InvalidRequestName(u64, Value),
     /// The msgid of a request or response was not decodable into a u64
     InvalidMsgid(Value),
 }
@@ -74,28 +68,15 @@ impl Display for InvalidMessage {
 
         match self {
             NotAnArray(val) => write!(fmt, "Value not an Array: '{val}'"),
-            WrongArrayLength(should, is) => write!(
+            WrongArrayLength(min, max, is) => write!(
                 fmt,
-                "Array should have length {:?}, has length {}",
-                should, is
+                "Array should have length between {min} and {max}, has length {is}",
             ),
             InvalidType(val) => {
                 write!(fmt, "Message type not decodable into u64: {val}")
             }
             UnknownMessageType(m) => {
                 write!(fmt, "Message type {m} is not 0, 1 or 2")
-            }
-            InvalidParams(val, s) => {
-                write!(fmt, "Params of method '{s}' not an Array: '{val}'")
-            }
-            InvalidNotificationName(val) => write!(
-                fmt,
-                "Notification name not a
-        string: '{}'",
-                val
-            ),
-            InvalidRequestName(id, val) => {
-                write!(fmt, "Request id {id}: name not valid String: '{val}'")
             }
             InvalidMsgid(val) => {
                 write!(fmt, "Msgid of message not decodable into u64: '{val}'")
@@ -210,7 +191,7 @@ pub enum CallError {
     ///
     /// 0. The underlying error
     /// 1. The name of the called method
-    SendError(EncodeError, String),
+    SendError(EncodeError, &'static str),
     /// The internal channel to send the response to the right task was closed.
     /// This really should not happen, unless someone manages to kill individual
     /// tasks.
@@ -219,7 +200,7 @@ pub enum CallError {
     ///
     /// 0. The underlying error
     /// 1. The name of the called method
-    InternalReceiveError(oneshot::error::RecvError, String),
+    InternalReceiveError(oneshot::error::RecvError, &'static str),
     /// Decoding neovim's response failed.
     ///
     /// Fields:
@@ -228,7 +209,7 @@ pub enum CallError {
     /// 1. The name of the called method
     ///
     /// *Note*: DecodeError can't be Clone, so we Arc-wrap it
-    DecodeError(Arc<DecodeError>, String),
+    DecodeError(Arc<DecodeError>, &'static str),
     /// Neovim encountered an error while executing the reqest.
     ///
     /// Fields:

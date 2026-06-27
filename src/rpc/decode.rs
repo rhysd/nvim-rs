@@ -162,7 +162,7 @@ impl<'a, R: Read> EnvelopeReader<'a, R> {
     fn require_len(&self, expected: u32) -> Result<(), Box<DecodeError>> {
         if self.len < expected {
             let expected = expected as u64;
-            let err = InvalidMessage::WrongArrayLength(expected..=expected, self.len as _);
+            let err = InvalidMessage::WrongArrayLength(expected, expected, self.len as _);
             return Err(err.into());
         }
         Ok(())
@@ -213,7 +213,7 @@ impl<'a> IncomingMessage<'a> {
 
         let mut fields = EnvelopeReader::new(reader)?;
         if fields.len() == 0 {
-            return Err(WrongArrayLength(3..=4, fields.len() as _).into());
+            return Err(WrongArrayLength(3, 4, fields.len() as _).into());
         }
 
         let msgtyp: u64 = fields.read_value()?.try_into().map_err(InvalidType)?;
@@ -548,8 +548,7 @@ mod tests {
 
         assert!(matches!(
             *err,
-            DecodeError::InvalidMessage(InvalidMessage::WrongArrayLength(range, 3))
-                if range == (4..=4)
+            DecodeError::InvalidMessage(InvalidMessage::WrongArrayLength(4, 4, 3))
         ));
         assert_eq!(decoder.rest(), bytes.as_slice());
     }
@@ -575,8 +574,7 @@ mod tests {
 
         assert!(matches!(
             *err,
-            DecodeError::InvalidMessage(InvalidMessage::WrongArrayLength(range, 2))
-                if range == (3..=3)
+            DecodeError::InvalidMessage(InvalidMessage::WrongArrayLength(3, 3, 2))
         ));
         assert_eq!(decoder.rest(), bytes.as_slice());
     }

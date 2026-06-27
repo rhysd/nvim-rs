@@ -231,7 +231,7 @@ impl<H: Handler> Neovim<H> {
 
     async fn send_msg(
         &self,
-        method: &str,
+        method: &'static str,
         args: Vec<Value>,
     ) -> Result<oneshot::Receiver<ResponseResult>, Box<EncodeError>> {
         let msgid = self.inner.msgid_counter.fetch_add(1, Ordering::Relaxed);
@@ -253,7 +253,7 @@ impl<H: Handler> Neovim<H> {
 
     async fn send_string(
         &self,
-        method: &str,
+        method: &'static str,
         arg: &str,
     ) -> Result<oneshot::Receiver<ResponseResult>, Box<EncodeError>> {
         let msgid = self.inner.msgid_counter.fetch_add(1, Ordering::Relaxed);
@@ -274,7 +274,7 @@ impl<H: Handler> Neovim<H> {
 
     async fn send_value_ref(
         &self,
-        method: &str,
+        method: &'static str,
         args: &[ValueRef<'_>],
     ) -> Result<oneshot::Receiver<ResponseResult>, Box<EncodeError>> {
         let msgid = self.inner.msgid_counter.fetch_add(1, Ordering::Relaxed);
@@ -295,13 +295,13 @@ impl<H: Handler> Neovim<H> {
 
     pub async fn call(
         &self,
-        method: &str,
+        method: &'static str,
         args: Vec<Value>,
     ) -> Result<Result<Value, Value>, Box<CallError>> {
         let receiver = self
             .send_msg(method, args)
             .await
-            .map_err(|e| CallError::SendError(*e, method.to_string()))?;
+            .map_err(|e| CallError::SendError(*e, method))?;
 
         receive_response(receiver, method).await
     }
@@ -315,14 +315,14 @@ impl<H: Handler> Neovim<H> {
         let receiver = self
             .send_string(METHOD, keys)
             .await
-            .map_err(|e| CallError::SendError(*e, METHOD.to_owned()))?;
+            .map_err(|e| CallError::SendError(*e, METHOD))?;
 
         receive_response(receiver, METHOD).await
     }
 
     pub(crate) async fn notify_string(
         &self,
-        method: &str,
+        method: &'static str,
         arg: &str,
     ) -> Result<(), Box<CallError>> {
         encode::encode_single_string_arg_msg_to_state(
@@ -332,25 +332,25 @@ impl<H: Handler> Neovim<H> {
             arg,
         )
         .await
-        .map_err(|e| Box::new(CallError::SendError(*e, method.to_owned())))
+        .map_err(|e| Box::new(CallError::SendError(*e, method)))
     }
 
     pub async fn call_value_ref(
         &self,
-        method: &str,
+        method: &'static str,
         args: &[ValueRef<'_>],
     ) -> Result<Result<Value, Value>, Box<CallError>> {
         let receiver = self
             .send_value_ref(method, args)
             .await
-            .map_err(|e| CallError::SendError(*e, method.to_owned()))?;
+            .map_err(|e| CallError::SendError(*e, method))?;
 
         receive_response(receiver, method).await
     }
 
     pub async fn notify_value_ref(
         &self,
-        method: &str,
+        method: &'static str,
         args: &[ValueRef<'_>],
     ) -> Result<(), Box<CallError>> {
         encode::encode_value_ref_to_state(
@@ -360,7 +360,7 @@ impl<H: Handler> Neovim<H> {
             args,
         )
         .await
-        .map_err(|e| Box::new(CallError::SendError(*e, method.to_owned())))
+        .map_err(|e| Box::new(CallError::SendError(*e, method)))
     }
 
     async fn send_error_to_callers(
@@ -531,21 +531,18 @@ impl<H: Handler> Neovim<H> {
 
 async fn receive_response(
     receiver: oneshot::Receiver<ResponseResult>,
-    method: &str,
+    method: &'static str,
 ) -> Result<Result<Value, Value>, Box<CallError>> {
     match receiver.await {
         // Result<Result<Result<Value, Value>, Arc<DecodeError>>, RecvError>
         Ok(Ok(r)) => Ok(r), // r is Result<Value, Value>, i.e. we got an answer
         Ok(Err(err)) => {
             // err is a Decode Error, i.e. the answer wasn't decodable
-            Err(Box::new(CallError::DecodeError(err, method.to_string())))
+            Err(Box::new(CallError::DecodeError(err, method)))
         }
         Err(err) => {
             // err is RecvError
-            Err(Box::new(CallError::InternalReceiveError(
-                err,
-                method.to_string(),
-            )))
+            Err(Box::new(CallError::InternalReceiveError(err, method)))
         }
     }
 }
